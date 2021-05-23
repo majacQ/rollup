@@ -56,7 +56,6 @@ import relativeId, { getAliasName } from './utils/relativeId';
 import renderChunk from './utils/renderChunk';
 import { RenderOptions } from './utils/renderHelpers';
 import { makeUnique, renderNamePattern } from './utils/renderNamePattern';
-import { sanitizeFileName } from './utils/sanitizeFileName';
 import { timeEnd, timeStart } from './utils/timers';
 import { MISSING_EXPORT_SHIM_VARIABLE } from './utils/variableNames';
 
@@ -437,20 +436,19 @@ export default class Chunk {
 		unsetOptions: Set<string>
 	): string {
 		const id = this.orderedModules[0].id;
-		const sanitizedId = sanitizeFileName(id);
+		const sanitizedId = this.outputOptions.sanitizeFileName(id);
 		let path: string;
 		if (isAbsolute(id)) {
 			const extension = extname(id);
 			const pattern = unsetOptions.has('entryFileNames')
-				? NON_ASSET_EXTENSIONS.includes(extension)
-					? '[name].js'
-					: '[name][extname].js'
+				? '[name][assetExtname].js'
 				: options.entryFileNames;
 			const currentDir = dirname(sanitizedId);
 			const fileName = renderNamePattern(
 				typeof pattern === 'function' ? pattern(this.getChunkInfo()) : pattern,
 				'output.entryFileNames',
 				{
+					assetExtname: () => NON_ASSET_EXTENSIONS.includes(extension) ? '' : extension,
 					ext: () => extension.substr(1),
 					extname: () => extension,
 					format: () => options.format as string,
@@ -501,7 +499,7 @@ export default class Chunk {
 	}
 
 	getChunkName(): string {
-		return this.name || (this.name = sanitizeFileName(this.getFallbackChunkName()));
+		return this.name || (this.name = this.outputOptions.sanitizeFileName(this.getFallbackChunkName()));
 	}
 
 	getExportNames(): string[] {
@@ -816,7 +814,7 @@ export default class Chunk {
 		if (fileName) {
 			this.fileName = fileName;
 		} else {
-			this.name = sanitizeFileName(name || getChunkNameFromModule(facadedModule));
+			this.name = this.outputOptions.sanitizeFileName(name || getChunkNameFromModule(facadedModule));
 		}
 	}
 
@@ -1328,8 +1326,8 @@ export default class Chunk {
 		if (!this.outputOptions.preserveModules) {
 			if (this.includedNamespaces.has(module)) {
 				const memberVariables = module.namespace.getMemberVariables();
-				for (const name of Object.keys(memberVariables)) {
-					moduleImports.add(memberVariables[name]);
+				for (const variable of Object.values(memberVariables)) {
+					moduleImports.add(variable);
 				}
 			}
 		}

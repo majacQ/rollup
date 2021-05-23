@@ -3,7 +3,6 @@ import { RenderOptions } from '../../utils/renderHelpers';
 import { RESERVED_NAMES } from '../../utils/reservedNames';
 import { getSystemExportStatement } from '../../utils/systemJsRendering';
 import Identifier from '../nodes/Identifier';
-import { UNKNOWN_PATH } from '../utils/PathTracker';
 import Variable from './Variable';
 
 export default class NamespaceVariable extends Variable {
@@ -29,25 +28,17 @@ export default class NamespaceVariable extends Variable {
 		this.name = identifier.name;
 	}
 
-	// This is only called if "UNKNOWN_PATH" is reassigned as in all other situations, either the
-	// build fails due to an illegal namespace reassignment or MemberExpression already forwards
-	// the reassignment to the right variable. This means we lost track of this variable and thus
-	// need to reassign all exports.
-	deoptimizePath() {
-		const memberVariables = this.getMemberVariables();
-		for (const key of Object.keys(memberVariables)) {
-			memberVariables[key].deoptimizePath(UNKNOWN_PATH);
-		}
-	}
-
 	getMemberVariables(): { [name: string]: Variable } {
 		if (this.memberVariables) {
 			return this.memberVariables;
 		}
-		const memberVariables = Object.create(null);
+		const memberVariables: { [name: string]: Variable } = Object.create(null);
 		for (const name of this.context.getExports().concat(this.context.getReexports())) {
 			if (name[0] !== '*' && name !== this.module.info.syntheticNamedExports) {
-				memberVariables[name] = this.context.traceExport(name);
+				const exportedVariable = this.context.traceExport(name);
+				if (exportedVariable) {
+					memberVariables[name] = exportedVariable;
+				}
 			}
 		}
 		return (this.memberVariables = memberVariables);
@@ -75,9 +66,7 @@ export default class NamespaceVariable extends Variable {
 		const t = options.indent;
 
 		const memberVariables = this.getMemberVariables();
-		const members = Object.keys(memberVariables).map(name => {
-			const original = memberVariables[name];
-
+		const members = Object.entries(memberVariables).map(([name, original]) => {
 			if (this.referencedEarly || original.isReassigned) {
 				return `${t}get ${name}${_}()${_}{${_}return ${original.getName()}${
 					options.compact ? '' : ';'

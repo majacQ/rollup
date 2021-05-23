@@ -446,6 +446,7 @@ This pattern will also be used when setting the [`output.preserveModules`](guide
 * `[name]`: The file name (without extension) of the file.
 * `[ext]`: The extension of the file.
 * `[extname]`: The extension of the file, prefixed by `.` if it is not empty.
+* `[assetExtname]`: The extension of the file, prefixed by `.` if it is not empty and it is not one of `js`, `jsx`, `ts` or `tsx`.
 
 #### output.extend
 Type: `boolean`<br>
@@ -1319,6 +1320,15 @@ CLI: `--preferConst`/`--no-preferConst`<br>
 Default: `false`
 
 Generate `const` declarations for exports rather than `var` declarations.
+
+#### output.sanitizeFileName
+Type: `boolean | (string) => string`<br>
+CLI: `--sanitizeFileName`/`no-sanitizeFileName`
+Default: `true`
+
+Set to `false` to disable all chunk name sanitizations (removal of `\0`, `?` and `*` characters).
+
+Alternatively set to a function to allow custom chunk name sanitization.
 
 #### output.strict
 Type: `boolean`<br>
