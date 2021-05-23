@@ -1,0 +1,16 @@
+{
+	"compilerOptions": {
+		"allowSyntheticDefaultImports": true,
+		"diagnostics": true,
+		"module": "commonjs",
+		"noEmitOnError": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"pretty": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"target": "es2018"
+	},
+	"include": ["typings/**/*.d.ts", "src", "cli", "browser"],
+	"exclude": ["dist", "node_modules", "test/typescript"]
+}
