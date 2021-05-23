@@ -15,8 +15,11 @@ export default class AssignmentPattern extends NodeBase implements PatternNode {
 	type!: NodeType.tAssignmentPattern;
 	private deoptimized = false;
 
-	addExportedVariables(variables: Variable[]): void {
-		this.left.addExportedVariables(variables);
+	addExportedVariables(
+		variables: Variable[],
+		exportNamesByVariable: Map<Variable, string[]>
+	): void {
+		this.left.addExportedVariables(variables, exportNamesByVariable);
 	}
 
 	declare(kind: string, init: ExpressionEntity) {

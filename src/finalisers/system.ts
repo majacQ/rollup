@@ -1,6 +1,6 @@
 import { Bundle as MagicStringBundle } from 'magic-string';
 import { ChunkExports, ModuleDeclarations } from '../Chunk';
-import { OutputOptions } from '../rollup/types';
+import { NormalizedOutputOptions } from '../rollup/types';
 import { MISSING_EXPORT_SHIM_VARIABLE } from '../utils/variableNames';
 import { FinaliserOptions } from './index';
 
@@ -27,9 +27,9 @@ const getStarExcludesBlock = (
 	n: string
 ): string =>
 	starExcludes
-		? `${n}${t}${varOrConst} _starExcludes${_}=${_}{${_}${Array.from(starExcludes).join(
-				`:${_}1,${_}`
-		  )}${starExcludes.size ? `:${_}1` : ''}${_}};`
+		? `${n}${t}${varOrConst} _starExcludes${_}=${_}{${_}${[...starExcludes]
+				.map(prop => `${prop}:${_}1`)
+				.join(`,${_}`)}${_}};`
 		: '';
 
 const getImportBindingsBlock = (
@@ -78,6 +78,16 @@ const getMissingExportsBlock = (exports: ChunkExports, _: string, t: string, n: 
 		n
 	);
 
+const getSyntheticExportsBlock = (exports: ChunkExports, _: string, t: string, n: string): string =>
+	getExportsBlock(
+		exports
+			.filter(expt => expt.expression)
+			.map(expt => ({ name: expt.exported, value: expt.local })),
+		_,
+		t,
+		n
+	);
+
 export default function system(
 	magicString: MagicStringBundle,
 	{
@@ -91,7 +101,7 @@ export default function system(
 		usesTopLevelAwait,
 		varOrConst
 	}: FinaliserOptions,
-	options: OutputOptions
+	options: NormalizedOutputOptions
 ) {
 	const n = options.compact ? '' : '\n';
 	const _ = options.compact ? '' : ' ';
@@ -183,6 +193,8 @@ export default function system(
 						.map(s =>
 							s
 								? `function${_}(module)${_}{${n}${t}${t}${t}${s}${n}${t}${t}}`
+								: options.systemNullSetters
+								? `null`
 								: `function${_}()${_}{}`
 						)
 						.join(`,${_}`)}],`
@@ -194,13 +206,11 @@ export default function system(
 
 	const wrapperEnd =
 		`${n}${n}` +
+		getSyntheticExportsBlock(exports, _, t, n) +
 		getMissingExportsBlock(exports, _, t, n) +
 		`${t}${t}}${n}${t}}${options.compact ? '' : ';'}${n}});`;
 
 	if (intro) magicString.prepend(intro);
 	if (outro) magicString.append(outro);
-	return magicString
-		.indent(`${t}${t}${t}`)
-		.append(wrapperEnd)
-		.prepend(wrapperStart);
+	return magicString.indent(`${t}${t}${t}`).append(wrapperEnd).prepend(wrapperStart);
 }

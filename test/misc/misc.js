@@ -49,7 +49,7 @@ describe('misc', () => {
 				assert.equal(relevantWarnings.length, 1);
 				assert.equal(
 					relevantWarnings[0].message,
-					`Creating a browser bundle that depends on Node.js built-in module ('util'). You might need to include https://www.npmjs.com/package/rollup-plugin-node-builtins`
+					`Creating a browser bundle that depends on Node.js built-in module ('util'). You might need to include https://github.com/ionic-team/rollup-plugin-node-polyfills`
 				);
 			});
 	});
@@ -108,12 +108,10 @@ describe('misc', () => {
 			.then(bundle => bundle.generate({ format: 'es' }))
 			.then(({ output }) => {
 				assert.equal(warnings.length, 0);
-				assert.deepEqual(output.map(({ fileName }) => fileName), [
-					'main1.js',
-					'main2.js',
-					'dep-f8bec8a7.js',
-					'dyndep-b0a9ee12.js'
-				]);
+				assert.deepEqual(
+					output.map(({ fileName }) => fileName),
+					['main1.js', 'main2.js', 'dep-f8bec8a7.js', 'dyndep-b0a9ee12.js']
+				);
 			});
 	});
 
@@ -158,6 +156,11 @@ describe('misc', () => {
 	it('allows passing the same object to `rollup` and `generate`', () => {
 		const options = {
 			input: 'input',
+			onwarn(warning, handler) {
+				if (warning.code !== 'INPUT_HOOK_IN_OUTPUT_PLUGIN') {
+					handler(warning);
+				}
+			},
 			plugins: [
 				loader({
 					input: 'export default 42;'
@@ -174,5 +177,69 @@ describe('misc', () => {
 			.then(output =>
 				assert.strictEqual(output.output[0].code, 'var input = 42;\n\nexport default input;\n')
 			);
+	});
+
+	it('consistently handles comments when using the cache', async () => {
+		const FILES = {
+			main: `import value from "other";
+console.log(value);
+/*#__PURE__*/console.log('removed');`,
+			other: `var x = "foo";
+export default x;
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoib3RoZXIuanMiLCJzb3VyY2VSb290IjoiIiwic291cmNlcyI6WyJvdGhlci50cyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQSxJQUFNLENBQUMsR0FBVyxLQUFLLENBQUM7QUFDeEIsZUFBZSxDQUFDLENBQUMifQ==`
+		};
+		const EXPECTED_OUTPUT = `var x = "foo";
+
+console.log(x);
+`;
+		const firstBundle = await rollup.rollup({
+			input: 'main',
+			plugins: [loader(FILES)]
+		});
+		assert.strictEqual(
+			(await firstBundle.generate({ format: 'es' })).output[0].code,
+			EXPECTED_OUTPUT,
+			'first'
+		);
+		const secondBundle = await rollup.rollup({
+			cache: firstBundle.cache,
+			input: 'main',
+			plugins: [loader(FILES)]
+		});
+		assert.strictEqual(
+			(await secondBundle.generate({ format: 'es' })).output[0].code,
+			EXPECTED_OUTPUT,
+			'second'
+		);
+	});
+
+	it('handles imports from chunks with names that correspond to parent directory names of other chunks', async () => {
+		const bundle = await rollup.rollup({
+			input: {
+				'base/main': 'main.js',
+				'base/main/feature': 'feature.js',
+				'base/main/feature/sub': 'subfeature.js'
+			},
+			plugins: [
+				loader({
+					'main.js': 'export function fn () { return "main"; } console.log(fn());',
+					'feature.js': 'import { fn } from "main.js"; console.log(fn() + " feature");',
+					'subfeature.js': 'import { fn } from "main.js"; console.log(fn() + " subfeature");'
+				})
+			]
+		});
+		const {
+			output: [main, feature, subfeature]
+		} = await bundle.generate({
+			entryFileNames: `[name]`,
+			chunkFileNames: `[name]`,
+			format: 'es'
+		});
+		assert.strictEqual(main.fileName, 'base/main');
+		assert.ok(main.code.startsWith('function fn'));
+		assert.strictEqual(feature.fileName, 'base/main/feature');
+		assert.ok(feature.code.startsWith("import { fn } from '../main'"));
+		assert.strictEqual(subfeature.fileName, 'base/main/feature/sub');
+		assert.ok(subfeature.code.startsWith("import { fn } from '../../main'"));
 	});
 });

@@ -1,5 +1,6 @@
 import isReference from 'is-reference';
 import MagicString from 'magic-string';
+import { NormalizedTreeshakingOptions } from '../../rollup/types';
 import { BLANK } from '../../utils/blank';
 import { NodeRenderOptions, RenderOptions } from '../../utils/renderHelpers';
 import { CallOptions } from '../CallOptions';
@@ -26,8 +27,11 @@ export default class Identifier extends NodeBase implements PatternNode {
 	variable: Variable | null = null;
 	private bound = false;
 
-	addExportedVariables(variables: Variable[]): void {
-		if (this.variable !== null && this.variable.exportName) {
+	addExportedVariables(
+		variables: Variable[],
+		exportNamesByVariable: Map<Variable, string[]>
+	): void {
+		if (this.variable !== null && exportNamesByVariable.has(this.variable)) {
 			variables.push(this.variable);
 		}
 	}
@@ -35,7 +39,7 @@ export default class Identifier extends NodeBase implements PatternNode {
 	bind() {
 		if (this.bound) return;
 		this.bound = true;
-		if (this.variable === null && isReference(this, this.parent)) {
+		if (this.variable === null && isReference(this, this.parent as any)) {
 			this.variable = this.scope.findVariable(this.name);
 			this.variable.addReference(this);
 		}
@@ -55,7 +59,8 @@ export default class Identifier extends NodeBase implements PatternNode {
 				variable = this.scope.addDeclaration(this, this.context, init, true);
 				break;
 			case 'function':
-				variable = this.scope.addDeclaration(this, this.context, init, 'function');
+				// in strict mode, functions are only hoisted within a scope but not across block scopes
+				variable = this.scope.addDeclaration(this, this.context, init, false);
 				break;
 			case 'let':
 			case 'const':
@@ -104,7 +109,7 @@ export default class Identifier extends NodeBase implements PatternNode {
 
 	hasEffects(): boolean {
 		return (
-			this.context.unknownGlobalSideEffects &&
+			(this.context.options.treeshake as NormalizedTreeshakingOptions).unknownGlobalSideEffects &&
 			this.variable instanceof GlobalVariable &&
 			this.variable.hasEffectsWhenAccessedAtPath(EMPTY_PATH)
 		);
@@ -126,11 +131,11 @@ export default class Identifier extends NodeBase implements PatternNode {
 		return !this.variable || this.variable.hasEffectsWhenCalledAtPath(path, callOptions, context);
 	}
 
-	include(context: InclusionContext) {
+	include() {
 		if (!this.included) {
 			this.included = true;
 			if (this.variable !== null) {
-				this.context.includeVariable(context, this.variable);
+				this.context.includeVariable(this.variable);
 			}
 		}
 	}

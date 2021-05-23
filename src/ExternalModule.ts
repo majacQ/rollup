@@ -1,49 +1,69 @@
 import ExternalVariable from './ast/variables/ExternalVariable';
-import Graph from './Graph';
-import { OutputOptions } from './rollup/types';
+import {
+	CustomPluginOptions,
+	ModuleInfo,
+	NormalizedInputOptions,
+	NormalizedOutputOptions
+} from './rollup/types';
+import { EMPTY_ARRAY } from './utils/blank';
 import { makeLegal } from './utils/identifierHelpers';
 import { isAbsolute, normalize, relative } from './utils/path';
 
 export default class ExternalModule {
 	chunk: void;
 	declarations: { [name: string]: ExternalVariable };
+	defaultVariableName = '';
+	dynamicImporters: string[] = [];
 	execIndex: number;
 	exportedVariables: Map<ExternalVariable, string>;
-	exportsNames = false;
-	exportsNamespace = false;
-	id: string;
-	moduleSideEffects: boolean;
+	importers: string[] = [];
+	info: ModuleInfo;
 	mostCommonSuggestion = 0;
+	namespaceVariableName = '';
 	nameSuggestions: { [name: string]: number };
 	reexported = false;
 	renderPath: string = undefined as any;
 	renormalizeRenderPath = false;
+	suggestedVariableName: string;
 	used = false;
-	variableName: string;
+	variableName = '';
 
-	private graph: Graph;
-
-	constructor(graph: Graph, id: string, moduleSideEffects: boolean) {
-		this.graph = graph;
-		this.id = id;
+	constructor(
+		private readonly options: NormalizedInputOptions,
+		public readonly id: string,
+		hasModuleSideEffects: boolean | 'no-treeshake',
+		meta: CustomPluginOptions
+	) {
 		this.execIndex = Infinity;
-		this.moduleSideEffects = moduleSideEffects;
-
-		const parts = id.split(/[\\/]/);
-		this.variableName = makeLegal(parts.pop()!);
-
+		this.suggestedVariableName = makeLegal(id.split(/[\\/]/).pop()!);
 		this.nameSuggestions = Object.create(null);
 		this.declarations = Object.create(null);
 		this.exportedVariables = new Map();
+
+		const module = this;
+		this.info = {
+			ast: null,
+			code: null,
+			dynamicallyImportedIds: EMPTY_ARRAY,
+			get dynamicImporters() {
+				return module.dynamicImporters.sort();
+			},
+			hasModuleSideEffects,
+			id,
+			implicitlyLoadedAfterOneOf: EMPTY_ARRAY,
+			implicitlyLoadedBefore: EMPTY_ARRAY,
+			importedIds: EMPTY_ARRAY,
+			get importers() {
+				return module.importers.sort();
+			},
+			isEntry: false,
+			isExternal: true,
+			meta,
+			syntheticNamedExports: false
+		};
 	}
 
 	getVariableForExportName(name: string): ExternalVariable {
-		if (name === '*') {
-			this.exportsNamespace = true;
-		} else if (name !== 'default') {
-			this.exportsNames = true;
-		}
-
 		let declaration = this.declarations[name];
 		if (declaration) return declaration;
 
@@ -52,12 +72,9 @@ export default class ExternalModule {
 		return declaration;
 	}
 
-	setRenderPath(options: OutputOptions, inputBase: string) {
-		this.renderPath = '';
-		if (options.paths) {
-			this.renderPath =
-				typeof options.paths === 'function' ? options.paths(this.id) : options.paths[this.id];
-		}
+	setRenderPath(options: NormalizedOutputOptions, inputBase: string) {
+		this.renderPath =
+			typeof options.paths === 'function' ? options.paths(this.id) : options.paths[this.id];
 		if (!this.renderPath) {
 			if (!isAbsolute(this.id)) {
 				this.renderPath = this.id;
@@ -75,7 +92,7 @@ export default class ExternalModule {
 
 		if (this.nameSuggestions[name] > this.mostCommonSuggestion) {
 			this.mostCommonSuggestion = this.nameSuggestions[name];
-			this.variableName = name;
+			this.suggestedVariableName = name;
 		}
 	}
 
@@ -96,7 +113,7 @@ export default class ExternalModule {
 						.map(name => `'${name}'`)
 						.join(', ')} and '${unused.slice(-1)}' are`;
 
-		this.graph.warn({
+		this.options.onwarn({
 			code: 'UNUSED_EXTERNAL_IMPORT',
 			message: `${names} imported from external module '${this.id}' but never used`,
 			names: unused,

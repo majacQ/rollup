@@ -1,21 +1,21 @@
 import { Bundle as MagicStringBundle } from 'magic-string';
 import { ChunkDependencies, ChunkExports, ImportSpecifier, ReexportSpecifier } from '../Chunk';
-import { OutputOptions } from '../rollup/types';
+import { NormalizedOutputOptions } from '../rollup/types';
 import { FinaliserOptions } from './index';
 
 export default function es(
 	magicString: MagicStringBundle,
-	{ intro, outro, dependencies, exports }: FinaliserOptions,
-	options: OutputOptions
+	{ intro, outro, dependencies, exports, varOrConst }: FinaliserOptions,
+	{ compact }: NormalizedOutputOptions
 ) {
-	const _ = options.compact ? '' : ' ';
-	const n = options.compact ? '' : '\n';
+	const _ = compact ? '' : ' ';
+	const n = compact ? '' : '\n';
 
 	const importBlock = getImportBlock(dependencies, _);
 	if (importBlock.length > 0) intro += importBlock.join(n) + n + n;
 	if (intro) magicString.prepend(intro);
 
-	const exportBlock = getExportBlock(exports, _);
+	const exportBlock = getExportBlock(exports, _, varOrConst);
 	if (exportBlock.length) magicString.append(n + n + exportBlock.join(n).trim());
 	if (outro) magicString.append(outro);
 
@@ -110,13 +110,16 @@ function getImportBlock(dependencies: ChunkDependencies, _: string): string[] {
 	return importBlock;
 }
 
-function getExportBlock(exports: ChunkExports, _: string): string[] {
+function getExportBlock(exports: ChunkExports, _: string, varOrConst: string): string[] {
 	const exportBlock: string[] = [];
 	const exportDeclaration: string[] = [];
 	for (const specifier of exports) {
 		if (specifier.exported === 'default') {
 			exportBlock.push(`export default ${specifier.local};`);
 		} else {
+			if (specifier.expression) {
+				exportBlock.push(`${varOrConst} ${specifier.local}${_}=${_}${specifier.expression};`);
+			}
 			exportDeclaration.push(
 				specifier.exported === specifier.local
 					? specifier.local

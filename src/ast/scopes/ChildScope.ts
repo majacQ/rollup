@@ -1,3 +1,4 @@
+import { InternalModuleFormat } from '../../rollup/types';
 import { getSafeName } from '../../utils/safeName';
 import ImportExpression from '../nodes/ImportExpression';
 import { ExpressionEntity } from '../nodes/shared/Expression';
@@ -5,10 +6,9 @@ import Variable from '../variables/Variable';
 import Scope from './Scope';
 
 export default class ChildScope extends Scope {
-	accessedDynamicImports?: Set<ImportExpression>;
-	accessedGlobalVariablesByFormat?: Map<string, Set<string>>;
 	accessedOutsideVariables = new Map<string, Variable>();
 	parent: Scope;
+	private accessedDynamicImports?: Set<ImportExpression>;
 
 	constructor(parent: Scope) {
 		super();
@@ -25,21 +25,14 @@ export default class ChildScope extends Scope {
 		}
 	}
 
-	addAccessedGlobalsByFormat(globalsByFormat: { [format: string]: string[] }) {
-		const accessedGlobalVariablesByFormat =
-			this.accessedGlobalVariablesByFormat || (this.accessedGlobalVariablesByFormat = new Map());
-		for (const format of Object.keys(globalsByFormat)) {
-			let accessedGlobalVariables = accessedGlobalVariablesByFormat.get(format);
-			if (!accessedGlobalVariables) {
-				accessedGlobalVariables = new Set();
-				accessedGlobalVariablesByFormat.set(format, accessedGlobalVariables);
-			}
-			for (const name of globalsByFormat[format]) {
-				accessedGlobalVariables.add(name);
-			}
+	addAccessedGlobals(globals: string[], accessedGlobalsByScope: Map<ChildScope, Set<string>>) {
+		const accessedGlobals = accessedGlobalsByScope.get(this) || new Set();
+		for (const name of globals) {
+			accessedGlobals.add(name);
 		}
+		accessedGlobalsByScope.set(this, accessedGlobals);
 		if (this.parent instanceof ChildScope) {
-			this.parent.addAccessedGlobalsByFormat(globalsByFormat);
+			this.parent.addAccessedGlobals(globals, accessedGlobalsByScope);
 		}
 	}
 
@@ -52,19 +45,23 @@ export default class ChildScope extends Scope {
 		this.parent instanceof ChildScope && this.parent.addReturnExpression(expression);
 	}
 
-	addUsedOutsideNames(usedNames: Set<string>, format: string): void {
+	addUsedOutsideNames(
+		usedNames: Set<string>,
+		format: InternalModuleFormat,
+		exportNamesByVariable: Map<Variable, string[]>,
+		accessedGlobalsByScope: Map<ChildScope, Set<string>>
+	): void {
 		for (const variable of this.accessedOutsideVariables.values()) {
 			if (variable.included) {
 				usedNames.add(variable.getBaseVariableName());
-				if (variable.exportName && format === 'system') {
+				if (format === 'system' && exportNamesByVariable.has(variable)) {
 					usedNames.add('exports');
 				}
 			}
 		}
-		const accessedGlobalVariables =
-			this.accessedGlobalVariablesByFormat && this.accessedGlobalVariablesByFormat.get(format);
-		if (accessedGlobalVariables) {
-			for (const name of accessedGlobalVariables) {
+		const accessedGlobals = accessedGlobalsByScope.get(this);
+		if (accessedGlobals) {
+			for (const name of accessedGlobals) {
 				usedNames.add(name);
 			}
 		}
@@ -74,9 +71,13 @@ export default class ChildScope extends Scope {
 		return this.variables.has(name) || this.parent.contains(name);
 	}
 
-	deconflict(format: string) {
+	deconflict(
+		format: InternalModuleFormat,
+		exportNamesByVariable: Map<Variable, string[]>,
+		accessedGlobalsByScope: Map<ChildScope, Set<string>>
+	) {
 		const usedNames = new Set<string>();
-		this.addUsedOutsideNames(usedNames, format);
+		this.addUsedOutsideNames(usedNames, format, exportNamesByVariable, accessedGlobalsByScope);
 		if (this.accessedDynamicImports) {
 			for (const importExpression of this.accessedDynamicImports) {
 				if (importExpression.inlineNamespace) {
@@ -86,11 +87,11 @@ export default class ChildScope extends Scope {
 		}
 		for (const [name, variable] of this.variables) {
 			if (variable.included || variable.alwaysRendered) {
-				variable.setSafeName(getSafeName(name, usedNames));
+				variable.setRenderNames(null, getSafeName(name, usedNames));
 			}
 		}
 		for (const scope of this.children) {
-			scope.deconflict(format);
+			scope.deconflict(format, exportNamesByVariable, accessedGlobalsByScope);
 		}
 	}
 

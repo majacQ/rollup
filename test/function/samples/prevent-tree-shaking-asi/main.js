@@ -2,7 +2,9 @@ function test1() {
 	return true ?
 		/* kept */
 
-		'expected' :
+		true ?
+			'expected' :
+			'unexpected' :
 		'unexpected';
 }
 assert.strictEqual(test1(), 'expected');
@@ -12,7 +14,9 @@ function test2() {
 		'unexpected' :
 		/* kept */
 
-		'expected';
+		false ?
+			'unexpected' :
+			'expected';
 }
 assert.strictEqual(test2(), 'expected');
 
@@ -20,17 +24,23 @@ function test3() {
 	return true &&
 		/* kept */
 
-		'expected';
+		'expected'  || false;
 }
 assert.strictEqual(test3(), 'expected');
 
-function test4() {
+function test4(value) {
+	return true &&
+		value  || false;
+}
+assert.strictEqual(test4('expected'), 'expected');
+
+function test5() {
 	return 'removed',
 		/* kept */
 
 		'expected';
 }
-assert.strictEqual(test4(), 'expected');
+assert.strictEqual(test5(), 'expected');
 
 try {
   throw true ?
@@ -40,3 +50,9 @@ try {
 } catch (err) {
 	assert.strictEqual(err.message, 'expected');
 }
+
+function* test6() {
+	yield false ||
+	'expected'
+}
+assert.strictEqual(test6().next().value, 'expected');

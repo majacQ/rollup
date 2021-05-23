@@ -1,10 +1,11 @@
 define(['require'], function (require) { 'use strict';
 
 	function _interopNamespace(e) {
-		if (e && e.__esModule) { return e; } else {
-			var n = {};
-			if (e) {
-				Object.keys(e).forEach(function (k) {
+		if (e && e.__esModule) return e;
+		var n = Object.create(null);
+		if (e) {
+			Object.keys(e).forEach(function (k) {
+				if (k !== 'default') {
 					var d = Object.getOwnPropertyDescriptor(e, k);
 					Object.defineProperty(n, k, d.get ? d : {
 						enumerable: true,
@@ -12,15 +13,15 @@ define(['require'], function (require) { 'use strict';
 							return e[k];
 						}
 					});
-				});
-			}
-			n['default'] = e;
-			return n;
+				}
+			});
 		}
+		n['default'] = e;
+		return Object.freeze(n);
 	}
 
 	var dep = 'dep';
 
-	new Promise(function (resolve, reject) { require([dep], function (m) { resolve(_interopNamespace(m)); }, reject) });
+	new Promise(function (resolve, reject) { require([dep], function (m) { resolve(/*#__PURE__*/_interopNamespace(m)); }, reject) });
 
 });

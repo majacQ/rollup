@@ -24,7 +24,7 @@ import { ExpressionEntity } from './shared/Expression';
 import { MultiExpression } from './shared/MultiExpression';
 import { ExpressionNode, IncludeChildren, NodeBase } from './shared/Node';
 
-export type LogicalOperator = '||' | '&&';
+export type LogicalOperator = '||' | '&&' | '??';
 
 export default class LogicalExpression extends NodeBase implements DeoptimizableEntity {
 	left!: ExpressionNode;
@@ -98,10 +98,13 @@ export default class LogicalExpression extends NodeBase implements Deoptimizable
 	}
 
 	hasEffects(context: HasEffectsContext): boolean {
-		if (this.usedBranch === null) {
-			return this.left.hasEffects(context) || this.right.hasEffects(context);
+		if (this.left.hasEffects(context)) {
+			return true;
 		}
-		return this.usedBranch.hasEffects(context);
+		if (this.usedBranch !== this.left) {
+			return this.right.hasEffects(context);
+		}
+		return false;
 	}
 
 	hasEffectsWhenAccessedAtPath(path: ObjectPath, context: HasEffectsContext): boolean {
@@ -178,10 +181,12 @@ export default class LogicalExpression extends NodeBase implements Deoptimizable
 				isCalleeOfRenderedParent: renderedParentType
 					? isCalleeOfRenderedParent
 					: (this.parent as CallExpression).callee === this,
+				preventASI,
 				renderedParentType: renderedParentType || this.parent.type
 			});
 		} else {
-			super.render(code, options);
+			this.left.render(code, options, { preventASI });
+			this.right.render(code, options);
 		}
 	}
 
@@ -192,7 +197,11 @@ export default class LogicalExpression extends NodeBase implements Deoptimizable
 			if (leftValue === UnknownValue) {
 				return null;
 			} else {
-				if (this.operator === '||' ? leftValue : !leftValue) {
+				if (
+					(this.operator === '||' && leftValue) ||
+					(this.operator === '&&' && !leftValue) ||
+					(this.operator === '??' && leftValue != null)
+				) {
 					this.usedBranch = this.left;
 					this.unusedBranch = this.right;
 				} else {

@@ -1,5 +1,6 @@
 import ExternalModule from '../../ExternalModule';
 import Module from '../../Module';
+import { RESERVED_NAMES } from '../../utils/reservedNames';
 import { CallOptions } from '../CallOptions';
 import { DeoptimizableEntity } from '../DeoptimizableEntity';
 import { HasEffectsContext, InclusionContext } from '../ExecutionContext';
@@ -12,16 +13,15 @@ import { LiteralValueOrUnknown, UnknownValue, UNKNOWN_EXPRESSION } from '../valu
 
 export default class Variable implements ExpressionEntity {
 	alwaysRendered = false;
-	exportName: string | null = null;
 	included = false;
 	isId = false;
+	// both NamespaceVariable and ExternalVariable can be namespaces
 	isNamespace?: boolean;
 	isReassigned = false;
 	module?: Module | ExternalModule;
 	name: string;
 	renderBaseName: string | null = null;
 	renderName: string | null = null;
-	safeExportName: string | null = null;
 
 	constructor(name: string) {
 		this.name = name;
@@ -49,7 +49,9 @@ export default class Variable implements ExpressionEntity {
 
 	getName(): string {
 		const name = this.renderName || this.name;
-		return this.renderBaseName ? `${this.renderBaseName}${getPropertyAccess(name)}` : name;
+		return this.renderBaseName
+			? `${this.renderBaseName}${RESERVED_NAMES[name] ? `['${name}']` : `.${name}`}`
+			: name;
 	}
 
 	getReturnExpressionWhenCalledAtPath(
@@ -82,7 +84,7 @@ export default class Variable implements ExpressionEntity {
 	 * previously.
 	 * Once a variable is included, it should take care all its declarations are included.
 	 */
-	include(_context: InclusionContext) {
+	include() {
 		this.included = true;
 	}
 
@@ -98,16 +100,4 @@ export default class Variable implements ExpressionEntity {
 		this.renderBaseName = baseName;
 		this.renderName = name;
 	}
-
-	setSafeName(name: string | null) {
-		this.renderName = name;
-	}
-
-	toString() {
-		return this.name;
-	}
 }
-
-const getPropertyAccess = (name: string) => {
-	return /^(?!\d)[\w$]+$/.test(name) ? `.${name}` : `[${JSON.stringify(name)}]`;
-};

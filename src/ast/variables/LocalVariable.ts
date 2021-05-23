@@ -2,7 +2,7 @@ import Module, { AstContext } from '../../Module';
 import { markModuleAndImpureDependenciesAsExecuted } from '../../utils/traverseStaticDependencies';
 import { CallOptions } from '../CallOptions';
 import { DeoptimizableEntity } from '../DeoptimizableEntity';
-import { HasEffectsContext, InclusionContext } from '../ExecutionContext';
+import { createInclusionContext, HasEffectsContext, InclusionContext } from '../ExecutionContext';
 import ExportDefaultDeclaration from '../nodes/ExportDefaultDeclaration';
 import Identifier from '../nodes/Identifier';
 import * as NodeType from '../nodes/NodeType';
@@ -150,13 +150,13 @@ export default class LocalVariable extends Variable {
 		const trackedExpressions = (callOptions.withNew
 			? context.instantiated
 			: context.called
-		).getEntities(path);
+		).getEntities(path, callOptions);
 		if (trackedExpressions.has(this)) return false;
 		trackedExpressions.add(this);
 		return (this.init && this.init.hasEffectsWhenCalledAtPath(path, callOptions, context))!;
 	}
 
-	include(context: InclusionContext) {
+	include() {
 		if (!this.included) {
 			this.included = true;
 			if (!this.module.isExecuted) {
@@ -164,7 +164,7 @@ export default class LocalVariable extends Variable {
 			}
 			for (const declaration of this.declarations) {
 				// If node is a default export, it can save a tree-shaking run to include the full declaration now
-				if (!declaration.included) declaration.include(context, false);
+				if (!declaration.included) declaration.include(createInclusionContext(), false);
 				let node = declaration.parent as Node;
 				while (!node.included) {
 					// We do not want to properly include parents in case they are part of a dead branch
@@ -178,12 +178,14 @@ export default class LocalVariable extends Variable {
 	}
 
 	includeCallArguments(context: InclusionContext, args: (ExpressionNode | SpreadElement)[]): void {
-		if (this.isReassigned) {
+		if (this.isReassigned || (this.init && context.includedCallArguments.has(this.init))) {
 			for (const arg of args) {
 				arg.include(context, false);
 			}
 		} else if (this.init) {
+			context.includedCallArguments.add(this.init);
 			this.init.includeCallArguments(context, args);
+			context.includedCallArguments.delete(this.init);
 		}
 	}
 

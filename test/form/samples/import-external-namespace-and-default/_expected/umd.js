@@ -1,13 +1,15 @@
 (function (global, factory) {
 	typeof exports === 'object' && typeof module !== 'undefined' ? factory(require('foo')) :
 	typeof define === 'function' && define.amd ? define(['foo'], factory) :
-	(global = global || self, factory(global.foo));
+	(global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.foo));
 }(this, (function (foo) { 'use strict';
 
-	var foo__default = 'default' in foo ? foo['default'] : foo;
+	function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+	var foo__default = /*#__PURE__*/_interopDefaultLegacy(foo);
 
 	console.log( foo.bar );
 
-	console.log( foo__default );
+	console.log( foo__default['default'] );
 
 })));

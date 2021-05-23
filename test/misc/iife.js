@@ -7,7 +7,10 @@ function runTestCode(code, globals) {
 	const globalsWithAssert = Object.assign({}, globals, { assert });
 	const globalKeys = Object.keys(globalsWithAssert);
 	const fn = new Function(globalKeys, code);
-	fn.apply(globals, globalKeys.map(key => globalsWithAssert[key]));
+	fn.apply(
+		globals,
+		globalKeys.map(key => globalsWithAssert[key])
+	);
 }
 
 function runIifeTest(code, outputOptions) {
@@ -125,7 +128,7 @@ describe('The IIFE wrapper with an illegal name', () => {
 
 	it('does not fail for illegal characters if the extend option is used', () =>
 		getIifeCode('export const x = 42;', { name: 'my=name', extend: true }).then(code =>
-			assert.equal(
+			assert.strictEqual(
 				code,
 				'(function (exports) {\n' +
 					"\t'use strict';\n" +
@@ -133,6 +136,8 @@ describe('The IIFE wrapper with an illegal name', () => {
 					'\tconst x = 42;\n' +
 					'\n' +
 					'\texports.x = x;\n' +
+					'\n' +
+					"\tObject.defineProperty(exports, '__esModule', { value: true });\n" +
 					'\n' +
 					"}(this['my=name'] = this['my=name'] || {}));\n"
 			)

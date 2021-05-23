@@ -1,4 +1,5 @@
 import MagicString from 'magic-string';
+import { NormalizedTreeshakingOptions } from '../../rollup/types';
 import { BLANK } from '../../utils/blank';
 import relativeId from '../../utils/relativeId';
 import { NodeRenderOptions, RenderOptions } from '../../utils/renderHelpers';
@@ -24,6 +25,7 @@ import * as NodeType from './NodeType';
 import { ExpressionNode, IncludeChildren, NodeBase } from './shared/Node';
 import { PatternNode } from './shared/Pattern';
 import SpreadElement from './SpreadElement';
+import Super from './Super';
 
 function getResolvablePropertyKey(memberExpression: MemberExpression): string | null {
 	return memberExpression.computed
@@ -70,7 +72,8 @@ function getStringFromPath(path: PathWithPositions): string {
 
 export default class MemberExpression extends NodeBase implements DeoptimizableEntity, PatternNode {
 	computed!: boolean;
-	object!: ExpressionNode;
+	object!: ExpressionNode | Super;
+	optional!: boolean;
 	property!: ExpressionNode;
 	propertyKey!: ObjectPathKey | null;
 	type!: NodeType.tMemberExpression;
@@ -178,7 +181,7 @@ export default class MemberExpression extends NodeBase implements DeoptimizableE
 		return (
 			this.property.hasEffects(context) ||
 			this.object.hasEffects(context) ||
-			(this.context.propertyReadSideEffects &&
+			((this.context.options.treeshake as NormalizedTreeshakingOptions).propertyReadSideEffects &&
 				this.object.hasEffectsWhenAccessedAtPath([this.propertyKey!], context))
 		);
 	}
@@ -217,7 +220,7 @@ export default class MemberExpression extends NodeBase implements DeoptimizableE
 		if (!this.included) {
 			this.included = true;
 			if (this.variable !== null) {
-				this.context.includeVariable(context, this.variable);
+				this.context.includeVariable(this.variable);
 			}
 		}
 		this.object.include(context, includeChildrenRecursively);
@@ -259,17 +262,20 @@ export default class MemberExpression extends NodeBase implements DeoptimizableE
 	}
 
 	private disallowNamespaceReassignment() {
-		if (
-			this.object instanceof Identifier &&
-			this.scope.findVariable(this.object.name).isNamespace
-		) {
-			return this.context.error(
-				{
-					code: 'ILLEGAL_NAMESPACE_REASSIGNMENT',
-					message: `Illegal reassignment to import '${this.object.name}'`
-				},
-				this.start
-			);
+		if (this.object instanceof Identifier) {
+			const variable = this.scope.findVariable(this.object.name);
+			if (variable.isNamespace) {
+				if (this.variable) {
+					this.context.includeVariable(this.variable);
+				}
+				this.context.warn(
+					{
+						code: 'ILLEGAL_NAMESPACE_REASSIGNMENT',
+						message: `Illegal reassignment to import '${this.object.name}'`
+					},
+					this.start
+				);
+			}
 		}
 	}
 

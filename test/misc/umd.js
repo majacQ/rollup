@@ -3,10 +3,19 @@ const assert = require('assert');
 const { loader } = require('../utils.js');
 
 function runTestCode(code, thisValue, globals) {
+	const globalThisDesc = Object.getOwnPropertyDescriptor(global, 'globalThis');
+	delete global.globalThis;
+
 	const globalsWithAssert = Object.assign({}, globals, { assert });
 	const globalKeys = Object.keys(globalsWithAssert);
 	const fn = new Function(globalKeys, code);
-	fn.apply(thisValue, globalKeys.map(key => globalsWithAssert[key]));
+	fn.apply(
+		thisValue,
+		globalKeys.map(key => globalsWithAssert[key])
+	);
+	if (globalThisDesc) {
+		Object.defineProperty(global, 'globalThis', globalThisDesc);
+	}
 }
 
 function runNodeTest(code) {
@@ -54,15 +63,21 @@ function runAmdTest(code, outputOptions) {
 	return defineArgs[0].indexOf('exports') === -1 ? result : module.exports;
 }
 
-function runIifeTest(code, outputOptions) {
+function runIifeTestWithThis(code, outputOptions) {
 	const global = { external: 'external' };
 	runTestCode(code, global, {});
 	return getAndCheckIifeExports(global, outputOptions);
 }
 
-function runStrictIifeTest(code, outputOptions) {
+function runStrictIifeTestWithSelf(code, outputOptions) {
 	const global = { external: 'external' };
 	runTestCode('"use strict";' + code, undefined, { self: global });
+	return getAndCheckIifeExports(global, outputOptions);
+}
+
+function runStrictIifeTestWithGlobalThis(code, outputOptions) {
+	const global = { external: 'external' };
+	runTestCode('"use strict";' + code, undefined, { globalThis: global });
 	return getAndCheckIifeExports(global, outputOptions);
 }
 
@@ -103,23 +118,27 @@ function getIifeExports(global, outputOptions) {
 	return {};
 }
 
-function getUmdCode(inputCode, outputOptions) {
-	return rollup
-		.rollup({
-			input: 'input',
-			external: ['external'],
-			plugins: [loader({ input: inputCode })]
-		})
-		.then(bundle =>
-			bundle.generate(
-				Object.assign({ format: 'umd', globals: { external: 'external' } }, outputOptions)
-			)
-		)
-		.then(({ output }) => output[0].code);
+async function getUmdCode(inputCode, outputOptions) {
+	const bundle = await rollup.rollup({
+		input: 'input',
+		external: ['external'],
+		plugins: [loader({ input: inputCode })]
+	});
+	const { output } = await bundle.generate(
+		Object.assign({ format: 'umd', globals: { external: 'external' } }, outputOptions)
+	);
+	return output[0].code;
 }
 
 function runTestsWithCode(code, outputOptions, expectedExports) {
-	const umdCodePromise = getUmdCode(code, outputOptions);
+	let umdCodePromise;
+
+	function getUmdCodePromise() {
+		if (umdCodePromise) {
+			return umdCodePromise;
+		}
+		return (umdCodePromise = getUmdCode(code, outputOptions));
+	}
 
 	[
 		{
@@ -131,26 +150,29 @@ function runTestsWithCode(code, outputOptions, expectedExports) {
 			runTest: runAmdTest
 		},
 		{
-			environmentName: 'iife',
-			runTest: runIifeTest
+			environmentName: 'iife with this',
+			runTest: runIifeTestWithThis
 		},
 		{
-			environmentName: 'strict mode iife',
-			runTest: runStrictIifeTest
+			environmentName: 'strict mode iife with self',
+			runTest: runStrictIifeTestWithSelf
+		},
+		{
+			environmentName: 'strict mode iife with globalThis',
+			runTest: runStrictIifeTestWithGlobalThis
 		},
 		{
 			environmentName: 'iife with existing globals',
 			runTest: runIifeWithExistingValuesTest
 		}
 	].forEach(({ environmentName, runTest }) =>
-		it(`works in ${environmentName} environment`, () =>
-			umdCodePromise.then(code => {
-				assert.deepEqual(
-					runTest(code, outputOptions),
-					expectedExports,
-					'expected exports are returned'
-				);
-			}))
+		it(`works in ${environmentName} environment`, async () => {
+			assert.deepEqual(
+				runTest(await getUmdCodePromise(), outputOptions),
+				expectedExports,
+				'expected exports are returned'
+			);
+		})
 	);
 }
 

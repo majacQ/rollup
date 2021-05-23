@@ -1,12 +1,15 @@
 'use strict';
 
-function _interopDefault (ex) { return (ex && (typeof ex === 'object') && 'default' in ex) ? ex['default'] : ex; }
+var external = require('external');
+
+function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
 
 function _interopNamespace(e) {
-	if (e && e.__esModule) { return e; } else {
-		var n = {};
-		if (e) {
-			Object.keys(e).forEach(function (k) {
+	if (e && e.__esModule) return e;
+	var n = Object.create(null);
+	if (e) {
+		Object.keys(e).forEach(function (k) {
+			if (k !== 'default') {
 				var d = Object.getOwnPropertyDescriptor(e, k);
 				Object.defineProperty(n, k, d.get ? d : {
 					enumerable: true,
@@ -14,16 +17,16 @@ function _interopNamespace(e) {
 						return e[k];
 					}
 				});
-			});
-		}
-		n['default'] = e;
-		return n;
+			}
+		});
 	}
+	n['default'] = e;
+	return Object.freeze(n);
 }
 
-var external = _interopDefault(require('external'));
+var external__default = /*#__PURE__*/_interopDefaultLegacy(external);
 
-console.log(external);
+console.log(external__default['default']);
 
 const _interopDefault$1 = 1;
 const _interopNamespace$1 = 1;
@@ -34,8 +37,8 @@ const document$1 = 1;
 const URL$1 = 1;
 console.log(_interopDefault$1, _interopNamespace$1, module$1, require$1, exports$1, document$1, URL$1);
 
-new Promise(function (resolve) { resolve(_interopNamespace(require('external'))); });
-exports.default = 0;
+Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require('external')); }).then(console.log);
+exports['default'] = 0;
 console.log((typeof document === 'undefined' ? new (require('u' + 'rl').URL)('file:' + __filename).href : (document.currentScript && document.currentScript.src || new URL('cjs.js', document.baseURI).href)));
 
 function nested1() {
@@ -48,8 +51,8 @@ function nested1() {
 	const URL$1 = 1;
 	console.log(_interopDefault, _interopNamespace$1, module, require$1, exports$1, document$1, URL$1);
 
-	new Promise(function (resolve) { resolve(_interopNamespace(require('external'))); });
-	exports.default = 1;
+	Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require('external')); }).then(console.log);
+	exports['default'] = 1;
 	console.log((typeof document === 'undefined' ? new (require('u' + 'rl').URL)('file:' + __filename).href : (document.currentScript && document.currentScript.src || new URL('cjs.js', document.baseURI).href)));
 }
 
@@ -68,4 +71,4 @@ function nested2() {
 
 nested2();
 
-module.exports = exports.default;
+module.exports = exports['default'];

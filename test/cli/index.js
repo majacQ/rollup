@@ -21,6 +21,7 @@ runTestSuiteWithSamples(
 			path.basename(dir) + ': ' + config.description,
 			done => {
 				process.chdir(config.cwd || dir);
+				if (config.before) config.before();
 
 				const command = config.command.replace(
 					/(^| )rollup($| )/g,
@@ -34,6 +35,7 @@ runTestSuiteWithSamples(
 						env: Object.assign({}, process.env, { FORCE_COLOR: '0' }, config.env)
 					},
 					(err, code, stderr) => {
+						if (config.after) config.after();
 						if (err && !err.killed) {
 							if (config.error) {
 								const shouldContinue = config.error(err);
@@ -44,7 +46,7 @@ runTestSuiteWithSamples(
 						}
 
 						if ('stderr' in config) {
-							const shouldContinue = config.stderr(stderr.trim());
+							const shouldContinue = config.stderr(stderr);
 							if (!shouldContinue) return done();
 						} else if (stderr) {
 							console.error(stderr);
@@ -118,9 +120,16 @@ runTestSuiteWithSamples(
 					}
 				);
 
-				childProcess.stderr.on('data', data => {
-					if (config.abortOnStderr && config.abortOnStderr(data)) {
-						childProcess.kill('SIGINT');
+				childProcess.stderr.on('data', async data => {
+					if (config.abortOnStderr) {
+						try {
+							if (await config.abortOnStderr(data)) {
+								childProcess.kill('SIGINT');
+							}
+						} catch (err) {
+							childProcess.kill('SIGINT');
+							done(err);
+						}
 					}
 				});
 			}

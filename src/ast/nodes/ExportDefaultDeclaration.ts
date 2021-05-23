@@ -1,9 +1,11 @@
 import MagicString from 'magic-string';
 import {
 	findFirstOccurrenceOutsideComment,
+	findNonWhiteSpace,
 	NodeRenderOptions,
 	RenderOptions
 } from '../../utils/renderHelpers';
+import { getSystemExportStatement } from '../../utils/systemJsRendering';
 import { treeshakeNode } from '../../utils/treeshakeNode';
 import { InclusionContext } from '../ExecutionContext';
 import ModuleScope from '../scopes/ModuleScope';
@@ -14,19 +16,23 @@ import Identifier from './Identifier';
 import * as NodeType from './NodeType';
 import { ExpressionNode, IncludeChildren, NodeBase } from './shared/Node';
 
-const WHITESPACE = /\s/;
-
 // The header ends at the first non-white-space after "default"
-function getDeclarationStart(code: string, start = 0) {
-	start = findFirstOccurrenceOutsideComment(code, 'default', start) + 7;
-	while (WHITESPACE.test(code[start])) start++;
-	return start;
+function getDeclarationStart(code: string, start: number) {
+	return findNonWhiteSpace(code, findFirstOccurrenceOutsideComment(code, 'default', start) + 7);
 }
 
-function getIdInsertPosition(code: string, declarationKeyword: string, start = 0) {
+function getIdInsertPosition(
+	code: string,
+	declarationKeyword: string,
+	endMarker: string,
+	start: number
+) {
 	const declarationEnd =
 		findFirstOccurrenceOutsideComment(code, declarationKeyword, start) + declarationKeyword.length;
-	code = code.slice(declarationEnd, findFirstOccurrenceOutsideComment(code, '{', declarationEnd));
+	code = code.slice(
+		declarationEnd,
+		findFirstOccurrenceOutsideComment(code, endMarker, declarationEnd)
+	);
 	const generatorStarPos = findFirstOccurrenceOutsideComment(code, '*');
 	if (generatorStarPos === -1) {
 		return declarationEnd;
@@ -46,7 +52,7 @@ export default class ExportDefaultDeclaration extends NodeBase {
 	include(context: InclusionContext, includeChildrenRecursively: IncludeChildren) {
 		super.include(context, includeChildrenRecursively);
 		if (includeChildrenRecursively) {
-			this.context.includeVariable(context, this.variable);
+			this.context.includeVariable(this.variable);
 		}
 	}
 
@@ -71,6 +77,7 @@ export default class ExportDefaultDeclaration extends NodeBase {
 				code,
 				declarationStart,
 				'function',
+				'(',
 				this.declaration.id === null,
 				options
 			);
@@ -79,20 +86,13 @@ export default class ExportDefaultDeclaration extends NodeBase {
 				code,
 				declarationStart,
 				'class',
+				'{',
 				this.declaration.id === null,
 				options
 			);
 		} else if (this.variable.getOriginalVariable() !== this.variable) {
 			// Remove altogether to prevent re-declaring the same variable
-			if (options.format === 'system' && this.variable.exportName) {
-				code.overwrite(
-					start,
-					end,
-					`exports('${this.variable.exportName}', ${this.variable.getName()});`
-				);
-			} else {
-				treeshakeNode(this, code, start, end);
-			}
+			treeshakeNode(this, code, start, end);
 			return;
 		} else if (this.variable.included) {
 			this.renderVariableDeclaration(code, declarationStart, options);
@@ -114,6 +114,7 @@ export default class ExportDefaultDeclaration extends NodeBase {
 		code: MagicString,
 		declarationStart: number,
 		declarationKeyword: string,
+		endMarker: string,
 		needsId: boolean,
 		options: RenderOptions
 	) {
@@ -123,16 +124,16 @@ export default class ExportDefaultDeclaration extends NodeBase {
 
 		if (needsId) {
 			code.appendLeft(
-				getIdInsertPosition(code.original, declarationKeyword, declarationStart),
+				getIdInsertPosition(code.original, declarationKeyword, endMarker, declarationStart),
 				` ${name}`
 			);
 		}
 		if (
 			options.format === 'system' &&
 			this.declaration instanceof ClassDeclaration &&
-			this.variable.exportName
+			options.exportNamesByVariable.has(this.variable)
 		) {
-			code.appendLeft(this.end, ` exports('${this.variable.exportName}', ${name});`);
+			code.appendLeft(this.end, ` ${getSystemExportStatement([this.variable], options)};`);
 		}
 	}
 
@@ -141,23 +142,29 @@ export default class ExportDefaultDeclaration extends NodeBase {
 		declarationStart: number,
 		options: RenderOptions
 	) {
-		const systemBinding =
-			options.format === 'system' && this.variable.exportName
-				? `exports('${this.variable.exportName}', `
-				: '';
-		code.overwrite(
-			this.start,
-			declarationStart,
-			`${options.varOrConst} ${this.variable.getName()} = ${systemBinding}`
-		);
 		const hasTrailingSemicolon = code.original.charCodeAt(this.end - 1) === 59; /*";"*/
-		if (systemBinding) {
+		const systemExportNames =
+			options.format === 'system' && options.exportNamesByVariable.get(this.variable);
+
+		if (systemExportNames) {
+			code.overwrite(
+				this.start,
+				declarationStart,
+				`${options.varOrConst} ${this.variable.getName()} = exports('${systemExportNames[0]}', `
+			);
 			code.appendRight(
 				hasTrailingSemicolon ? this.end - 1 : this.end,
 				')' + (hasTrailingSemicolon ? '' : ';')
 			);
-		} else if (!hasTrailingSemicolon) {
-			code.appendLeft(this.end, ';');
+		} else {
+			code.overwrite(
+				this.start,
+				declarationStart,
+				`${options.varOrConst} ${this.variable.getName()} = `
+			);
+			if (!hasTrailingSemicolon) {
+				code.appendLeft(this.end, ';');
+			}
 		}
 	}
 }

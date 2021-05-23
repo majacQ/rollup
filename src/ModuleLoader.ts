@@ -3,361 +3,331 @@ import ExternalModule from './ExternalModule';
 import Graph from './Graph';
 import Module from './Module';
 import {
-	ExternalOption,
-	GetManualChunk,
-	IsExternal,
-	ModuleJSON,
-	ModuleSideEffectsOption,
-	PureModulesOption,
+	CustomPluginOptions,
+	EmittedChunk,
+	HasModuleSideEffects,
+	NormalizedInputOptions,
+	PartialResolvedId,
 	ResolvedId,
 	ResolveIdResult,
-	TransformModuleJSON
+	SourceDescription
 } from './rollup/types';
+import { EMPTY_OBJECT } from './utils/blank';
 import {
 	errBadLoader,
-	errCannotAssignModuleToChunk,
 	errEntryCannotBeExternal,
 	errExternalSyntheticExports,
+	errImplicitDependantCannotBeExternal,
 	errInternalIdCannotBeExternal,
-	errInvalidOption,
-	errNamespaceConflict,
 	error,
 	errUnresolvedEntry,
+	errUnresolvedImplicitDependant,
 	errUnresolvedImport,
 	errUnresolvedImportTreatedAsExternal
 } from './utils/error';
+import { readFile } from './utils/fs';
 import { isRelative, resolve } from './utils/path';
 import { PluginDriver } from './utils/PluginDriver';
 import relativeId from './utils/relativeId';
+import { resolveId } from './utils/resolveId';
 import { timeEnd, timeStart } from './utils/timers';
 import transform from './utils/transform';
 
 export interface UnresolvedModule {
 	fileName: string | null;
 	id: string;
+	importer: string | undefined;
 	name: string | null;
 }
 
-function normalizeRelativeExternalId(importer: string, source: string) {
-	return isRelative(source) ? resolve(importer, '..', source) : source;
-}
-
-function getIdMatcher<T extends Array<any>>(
-	option: boolean | string[] | ((id: string, ...args: T) => boolean | null | undefined)
-): (id: string, ...args: T) => boolean {
-	if (option === true) {
-		return () => true;
-	}
-	if (typeof option === 'function') {
-		return (id, ...args) => (!id.startsWith('\0') && option(id, ...args)) || false;
-	}
-	if (option) {
-		const ids = new Set(Array.isArray(option) ? option : option ? [option] : []);
-		return (id => ids.has(id)) as (id: string, ...args: T) => boolean;
-	}
-	return () => false;
-}
-
-function getHasModuleSideEffects(
-	moduleSideEffectsOption: ModuleSideEffectsOption,
-	pureExternalModules: PureModulesOption,
-	graph: Graph
-): (id: string, external: boolean) => boolean {
-	if (typeof moduleSideEffectsOption === 'boolean') {
-		return () => moduleSideEffectsOption;
-	}
-	if (moduleSideEffectsOption === 'no-external') {
-		return (_id, external) => !external;
-	}
-	if (typeof moduleSideEffectsOption === 'function') {
-		return (id, external) =>
-			!id.startsWith('\0') ? moduleSideEffectsOption(id, external) !== false : true;
-	}
-	if (Array.isArray(moduleSideEffectsOption)) {
-		const ids = new Set(moduleSideEffectsOption);
-		return id => ids.has(id);
-	}
-	if (moduleSideEffectsOption) {
-		graph.warn(
-			errInvalidOption(
-				'treeshake.moduleSideEffects',
-				'please use one of false, "no-external", a function or an array'
-			)
-		);
-	}
-	const isPureExternalModule = getIdMatcher(pureExternalModules);
-	return (id, external) => !(external && isPureExternalModule(id));
-}
-
 export class ModuleLoader {
-	readonly isExternal: IsExternal;
-	private readonly getManualChunk: GetManualChunk;
-	private readonly graph: Graph;
-	private readonly hasModuleSideEffects: (id: string, external: boolean) => boolean;
+	private readonly hasModuleSideEffects: HasModuleSideEffects;
+	private readonly implicitEntryModules = new Set<Module>();
 	private readonly indexedEntryModules: { index: number; module: Module }[] = [];
 	private latestLoadModulesPromise: Promise<any> = Promise.resolve();
-	private readonly manualChunkModules: Record<string, Module[]> = {};
-	private readonly modulesById: Map<string, Module | ExternalModule>;
 	private nextEntryModuleIndex = 0;
-	private readonly pluginDriver: PluginDriver;
 
 	constructor(
-		graph: Graph,
-		modulesById: Map<string, Module | ExternalModule>,
-		pluginDriver: PluginDriver,
-		external: ExternalOption,
-		getManualChunk: GetManualChunk | null,
-		moduleSideEffects: ModuleSideEffectsOption,
-		pureExternalModules: PureModulesOption
+		private readonly graph: Graph,
+		private readonly modulesById: Map<string, Module | ExternalModule>,
+		private readonly options: NormalizedInputOptions,
+		private readonly pluginDriver: PluginDriver
 	) {
-		this.graph = graph;
-		this.modulesById = modulesById;
-		this.pluginDriver = pluginDriver;
-		this.isExternal = getIdMatcher(external);
-		this.hasModuleSideEffects = getHasModuleSideEffects(
-			moduleSideEffects,
-			pureExternalModules,
-			graph
-		);
-		this.getManualChunk = typeof getManualChunk === 'function' ? getManualChunk : () => null;
+		this.hasModuleSideEffects = options.treeshake
+			? options.treeshake.moduleSideEffects
+			: () => true;
 	}
 
-	addEntryModules(
+	async addAdditionalModules(unresolvedModules: string[]): Promise<Module[]> {
+		const result = this.extendLoadModulesPromise(
+			Promise.all(unresolvedModules.map(id => this.loadEntryModule(id, false, undefined, null)))
+		);
+		await this.awaitLoadModulesPromise();
+		return result;
+	}
+
+	async addEntryModules(
 		unresolvedEntryModules: UnresolvedModule[],
 		isUserDefined: boolean
 	): Promise<{
 		entryModules: Module[];
-		manualChunkModulesByAlias: Record<string, Module[]>;
+		implicitEntryModules: Module[];
 		newEntryModules: Module[];
 	}> {
 		const firstEntryModuleIndex = this.nextEntryModuleIndex;
 		this.nextEntryModuleIndex += unresolvedEntryModules.length;
-		const loadNewEntryModulesPromise = Promise.all(
-			unresolvedEntryModules.map(({ fileName, id, name }) =>
-				this.loadEntryModule(id, true).then(module => {
-					if (fileName !== null) {
-						module.chunkFileNames.add(fileName);
-					} else if (name !== null) {
-						if (module.chunkName === null) {
-							module.chunkName = name;
-						}
-						if (isUserDefined) {
-							module.userChunkNames.add(name);
-						}
+		const newEntryModules = await this.extendLoadModulesPromise(
+			Promise.all(
+				unresolvedEntryModules.map(
+					({ id, importer }): Promise<Module> => this.loadEntryModule(id, true, importer, null)
+				)
+			).then(entryModules => {
+				let moduleIndex = firstEntryModuleIndex;
+				for (let index = 0; index < entryModules.length; index++) {
+					const entryModule = entryModules[index];
+					entryModule.isUserDefinedEntryPoint =
+						entryModule.isUserDefinedEntryPoint || isUserDefined;
+					addChunkNamesToModule(entryModule, unresolvedEntryModules[index], isUserDefined);
+					const existingIndexedModule = this.indexedEntryModules.find(
+						indexedModule => indexedModule.module === entryModule
+					);
+					if (!existingIndexedModule) {
+						this.indexedEntryModules.push({ module: entryModule, index: moduleIndex });
+					} else {
+						existingIndexedModule.index = Math.min(existingIndexedModule.index, moduleIndex);
 					}
-					return module;
-				})
-			)
-		).then(entryModules => {
-			let moduleIndex = firstEntryModuleIndex;
-			for (const entryModule of entryModules) {
-				entryModule.isUserDefinedEntryPoint = entryModule.isUserDefinedEntryPoint || isUserDefined;
-				const existingIndexModule = this.indexedEntryModules.find(
-					indexedModule => indexedModule.module.id === entryModule.id
-				);
-				if (!existingIndexModule) {
-					this.indexedEntryModules.push({ module: entryModule, index: moduleIndex });
-				} else {
-					existingIndexModule.index = Math.min(existingIndexModule.index, moduleIndex);
+					moduleIndex++;
 				}
-				moduleIndex++;
-			}
-			this.indexedEntryModules.sort(({ index: indexA }, { index: indexB }) =>
-				indexA > indexB ? 1 : -1
-			);
-			return entryModules;
-		});
-		return this.awaitLoadModulesPromise(loadNewEntryModulesPromise).then(newEntryModules => ({
+				this.indexedEntryModules.sort(({ index: indexA }, { index: indexB }) =>
+					indexA > indexB ? 1 : -1
+				);
+				return entryModules;
+			})
+		);
+		await this.awaitLoadModulesPromise();
+		return {
 			entryModules: this.indexedEntryModules.map(({ module }) => module),
-			manualChunkModulesByAlias: this.manualChunkModules,
+			implicitEntryModules: [...this.implicitEntryModules],
 			newEntryModules
-		}));
+		};
 	}
 
-	addManualChunks(manualChunks: Record<string, string[]>): Promise<void> {
-		const unresolvedManualChunks: { alias: string; id: string }[] = [];
-		for (const alias of Object.keys(manualChunks)) {
-			const manualChunkIds = manualChunks[alias];
-			for (const id of manualChunkIds) {
-				unresolvedManualChunks.push({ id, alias });
-			}
+	async emitChunk({
+		fileName,
+		id,
+		importer,
+		name,
+		implicitlyLoadedAfterOneOf,
+		preserveSignature
+	}: EmittedChunk): Promise<Module> {
+		const unresolvedModule: UnresolvedModule = {
+			fileName: fileName || null,
+			id,
+			importer,
+			name: name || null
+		};
+		const module = implicitlyLoadedAfterOneOf
+			? await this.addEntryWithImplicitDependants(unresolvedModule, implicitlyLoadedAfterOneOf)
+			: (await this.addEntryModules([unresolvedModule], false)).newEntryModules[0];
+		if (preserveSignature != null) {
+			module.preserveSignature = preserveSignature;
 		}
-		const loadNewManualChunkModulesPromise = Promise.all(
-			unresolvedManualChunks.map(({ id }) => this.loadEntryModule(id, false))
-		).then(manualChunkModules => {
-			for (let index = 0; index < manualChunkModules.length; index++) {
-				this.addModuleToManualChunk(unresolvedManualChunks[index].alias, manualChunkModules[index]);
-			}
-		});
-
-		return this.awaitLoadModulesPromise(loadNewManualChunkModulesPromise);
+		return module;
 	}
 
 	async resolveId(
 		source: string,
-		importer: string,
-		skip?: number | null
+		importer: string | undefined,
+		customOptions: CustomPluginOptions | undefined,
+		skip: number | null = null
 	): Promise<ResolvedId | null> {
-		return this.normalizeResolveIdResult(
-			this.isExternal(source, importer, false)
-				? false
-				: await this.pluginDriver.hookFirst('resolveId', [source, importer], null, skip),
-			importer,
-			source
+		return this.addDefaultsToResolvedId(
+			this.getNormalizedResolvedIdWithoutDefaults(
+				this.options.external(source, importer, false)
+					? false
+					: await resolveId(
+							source,
+							importer,
+							this.options.preserveSymlinks,
+							this.pluginDriver,
+							skip,
+							customOptions
+					  ),
+
+				importer,
+				source
+			)
 		);
 	}
 
-	private addModuleToManualChunk(alias: string, module: Module) {
-		if (module.manualChunkAlias !== null && module.manualChunkAlias !== alias) {
-			return error(errCannotAssignModuleToChunk(module.id, alias, module.manualChunkAlias));
+	private addDefaultsToResolvedId(resolvedId: PartialResolvedId | null): ResolvedId | null {
+		if (!resolvedId) {
+			return null;
 		}
-		module.manualChunkAlias = alias;
-		if (!this.manualChunkModules[alias]) {
-			this.manualChunkModules[alias] = [];
-		}
-		this.manualChunkModules[alias].push(module);
+		const external = resolvedId.external || false;
+		return {
+			external,
+			id: resolvedId.id,
+			meta: resolvedId.meta || EMPTY_OBJECT,
+			moduleSideEffects:
+				resolvedId.moduleSideEffects ?? this.hasModuleSideEffects(resolvedId.id, external),
+			syntheticNamedExports: resolvedId.syntheticNamedExports ?? false
+		};
 	}
 
-	private awaitLoadModulesPromise<T>(loadNewModulesPromise: Promise<T>): Promise<T> {
+	private addEntryWithImplicitDependants(
+		unresolvedModule: UnresolvedModule,
+		implicitlyLoadedAfter: string[]
+	): Promise<Module> {
+		return this.extendLoadModulesPromise(
+			this.loadEntryModule(unresolvedModule.id, false, unresolvedModule.importer, null).then(
+				async entryModule => {
+					addChunkNamesToModule(entryModule, unresolvedModule, false);
+					if (!entryModule.info.isEntry) {
+						this.implicitEntryModules.add(entryModule);
+						const implicitlyLoadedAfterModules = await Promise.all(
+							implicitlyLoadedAfter.map(id =>
+								this.loadEntryModule(id, false, unresolvedModule.importer, entryModule.id)
+							)
+						);
+						for (const module of implicitlyLoadedAfterModules) {
+							entryModule.implicitlyLoadedAfter.add(module);
+						}
+						for (const dependant of entryModule.implicitlyLoadedAfter) {
+							dependant.implicitlyLoadedBefore.add(entryModule);
+						}
+					}
+					return entryModule;
+				}
+			)
+		);
+	}
+
+	private async addModuleSource(id: string, importer: string | undefined, module: Module) {
+		timeStart('load modules', 3);
+		let source: string | SourceDescription;
+		try {
+			source = (await this.pluginDriver.hookFirst('load', [id])) ?? (await readFile(id));
+		} catch (err) {
+			timeEnd('load modules', 3);
+			let msg = `Could not load ${id}`;
+			if (importer) msg += ` (imported by ${relativeId(importer)})`;
+			msg += `: ${err.message}`;
+			err.message = msg;
+			throw err;
+		}
+		timeEnd('load modules', 3);
+		const sourceDescription =
+			typeof source === 'string'
+				? { code: source }
+				: typeof source === 'object' && typeof source.code === 'string'
+				? source
+				: error(errBadLoader(id));
+		const cachedModule = this.graph.cachedModules.get(id);
+		if (
+			cachedModule &&
+			!cachedModule.customTransformCache &&
+			cachedModule.originalCode === sourceDescription.code
+		) {
+			if (cachedModule.transformFiles) {
+				for (const emittedFile of cachedModule.transformFiles)
+					this.pluginDriver.emitFile(emittedFile);
+			}
+			module.setSource(cachedModule);
+		} else {
+			module.updateOptions(sourceDescription);
+			module.setSource(
+				await transform(sourceDescription, module, this.pluginDriver, this.options.onwarn)
+			);
+		}
+	}
+
+	private async awaitLoadModulesPromise(): Promise<void> {
+		let startingPromise;
+		do {
+			startingPromise = this.latestLoadModulesPromise;
+			await startingPromise;
+		} while (startingPromise !== this.latestLoadModulesPromise);
+	}
+
+	private extendLoadModulesPromise<T>(loadNewModulesPromise: Promise<T>): Promise<T> {
 		this.latestLoadModulesPromise = Promise.all([
 			loadNewModulesPromise,
 			this.latestLoadModulesPromise
 		]);
+		this.latestLoadModulesPromise.catch(() => {
+			/* Avoid unhandled Promise rejections */
+		});
+		return loadNewModulesPromise;
+	}
 
-		const getCombinedPromise = (): Promise<void> => {
-			const startingPromise = this.latestLoadModulesPromise;
-			return startingPromise.then(() => {
-				if (this.latestLoadModulesPromise !== startingPromise) {
-					return getCombinedPromise();
+	private async fetchDynamicDependencies(module: Module): Promise<void> {
+		const dependencies = await Promise.all(
+			module.dynamicImports.map(async dynamicImport => {
+				const resolvedId = await this.resolveDynamicImport(
+					module,
+					typeof dynamicImport.argument === 'string'
+						? dynamicImport.argument
+						: dynamicImport.argument.esTreeNode,
+					module.id
+				);
+				if (resolvedId === null) return null;
+				if (typeof resolvedId === 'string') {
+					dynamicImport.resolution = resolvedId;
+					return null;
 				}
-			});
-		};
-
-		return getCombinedPromise().then(() => loadNewModulesPromise);
-	}
-
-	private fetchAllDependencies(module: Module): Promise<unknown> {
-		return Promise.all([
-			...(Array.from(module.sources).map(async source =>
-				this.fetchResolvedDependency(
-					source,
+				return (dynamicImport.resolution = await this.fetchResolvedDependency(
+					relativeId(resolvedId.id),
 					module.id,
-					(module.resolvedIds[source] =
-						module.resolvedIds[source] ||
-						this.handleResolveId(await this.resolveId(source, module.id), source, module.id))
-				)
-			) as Promise<unknown>[]),
-			...module.getDynamicImportExpressions().map((specifier, index) =>
-				this.resolveDynamicImport(module, specifier, module.id).then(resolvedId => {
-					if (resolvedId === null) return;
-					const dynamicImport = module.dynamicImports[index];
-					if (typeof resolvedId === 'string') {
-						dynamicImport.resolution = resolvedId;
-						return;
-					}
-					return this.fetchResolvedDependency(
-						relativeId(resolvedId.id),
-						module.id,
-						resolvedId
-					).then(module => {
-						dynamicImport.resolution = module;
-					});
-				})
-			)
-		]);
+					resolvedId
+				));
+			})
+		);
+		for (const dependency of dependencies) {
+			if (dependency) {
+				module.dynamicDependencies.add(dependency);
+				dependency.dynamicImporters.push(module.id);
+			}
+		}
 	}
 
-	private fetchModule(
-		id: string,
-		importer: string,
-		moduleSideEffects: boolean,
-		syntheticNamedExports: boolean,
+	private async fetchModule(
+		{ id, meta, moduleSideEffects, syntheticNamedExports }: ResolvedId,
+		importer: string | undefined,
 		isEntry: boolean
 	): Promise<Module> {
 		const existingModule = this.modulesById.get(id);
 		if (existingModule instanceof Module) {
-			existingModule.isEntryPoint = existingModule.isEntryPoint || isEntry;
-			return Promise.resolve(existingModule);
+			if (isEntry) {
+				existingModule.info.isEntry = true;
+				this.implicitEntryModules.delete(existingModule);
+				for (const dependant of existingModule.implicitlyLoadedAfter) {
+					dependant.implicitlyLoadedBefore.delete(existingModule);
+				}
+				existingModule.implicitlyLoadedAfter.clear();
+			}
+			return existingModule;
 		}
 
 		const module: Module = new Module(
 			this.graph,
 			id,
+			this.options,
+			isEntry,
 			moduleSideEffects,
 			syntheticNamedExports,
-			isEntry
+			meta
 		);
 		this.modulesById.set(id, module);
 		this.graph.watchFiles[id] = true;
-		const manualChunkAlias = this.getManualChunk(id);
-		if (typeof manualChunkAlias === 'string') {
-			this.addModuleToManualChunk(manualChunkAlias, module);
-		}
-
-		timeStart('load modules', 3);
-		return Promise.resolve(this.pluginDriver.hookFirst('load', [id]))
-			.catch((err: Error) => {
-				timeEnd('load modules', 3);
-				let msg = `Could not load ${id}`;
-				if (importer) msg += ` (imported by ${importer})`;
-				msg += `: ${err.message}`;
-				err.message = msg;
-				throw err;
-			})
-			.then(source => {
-				timeEnd('load modules', 3);
-				if (typeof source === 'string') return { code: source };
-				if (source && typeof source === 'object' && typeof source.code === 'string') return source;
-				return error(errBadLoader(id));
-			})
-			.then(sourceDescription => {
-				const cachedModule = this.graph.cachedModules.get(id);
-				if (
-					cachedModule &&
-					!cachedModule.customTransformCache &&
-					cachedModule.originalCode === sourceDescription.code
-				) {
-					if (cachedModule.transformFiles) {
-						for (const emittedFile of cachedModule.transformFiles)
-							this.pluginDriver.emitFile(emittedFile);
-					}
-					return cachedModule;
-				}
-
-				if (typeof sourceDescription.moduleSideEffects === 'boolean') {
-					module.moduleSideEffects = sourceDescription.moduleSideEffects;
-				}
-				if (typeof sourceDescription.syntheticNamedExports === 'boolean') {
-					module.syntheticNamedExports = sourceDescription.syntheticNamedExports;
-				}
-				return transform(this.graph, sourceDescription, module);
-			})
-			.then((source: TransformModuleJSON | ModuleJSON) => {
-				module.setSource(source);
-				this.modulesById.set(id, module);
-
-				return this.fetchAllDependencies(module).then(() => {
-					for (const name in module.exports) {
-						if (name !== 'default') {
-							module.exportsAll[name] = module.id;
-						}
-					}
-					for (const source of module.exportAllSources) {
-						const id = module.resolvedIds[source].id;
-						const exportAllModule = this.modulesById.get(id);
-						if (exportAllModule instanceof ExternalModule) continue;
-
-						for (const name in exportAllModule!.exportsAll) {
-							if (name in module.exportsAll) {
-								this.graph.warn(errNamespaceConflict(name, module, exportAllModule!));
-							} else {
-								module.exportsAll[name] = exportAllModule!.exportsAll[name];
-							}
-						}
-					}
-					return module;
-				});
-			});
+		await this.addModuleSource(id, importer, module);
+		await this.pluginDriver.hookParallel('moduleParsed', [module.info]);
+		await Promise.all([
+			this.fetchStaticDependencies(module),
+			this.fetchDynamicDependencies(module)
+		]);
+		module.linkImports();
+		return module;
 	}
 
 	private fetchResolvedDependency(
@@ -369,7 +339,12 @@ export class ModuleLoader {
 			if (!this.modulesById.has(resolvedId.id)) {
 				this.modulesById.set(
 					resolvedId.id,
-					new ExternalModule(this.graph, resolvedId.id, resolvedId.moduleSideEffects)
+					new ExternalModule(
+						this.options,
+						resolvedId.id,
+						resolvedId.moduleSideEffects,
+						resolvedId.meta
+					)
 				);
 			}
 
@@ -379,14 +354,58 @@ export class ModuleLoader {
 			}
 			return Promise.resolve(externalModule);
 		} else {
-			return this.fetchModule(
-				resolvedId.id,
-				importer,
-				resolvedId.moduleSideEffects,
-				resolvedId.syntheticNamedExports,
-				false
-			);
+			return this.fetchModule(resolvedId, importer, false);
 		}
+	}
+
+	private async fetchStaticDependencies(module: Module): Promise<void> {
+		for (const dependency of await Promise.all(
+			Array.from(module.sources, async source =>
+				this.fetchResolvedDependency(
+					source,
+					module.id,
+					(module.resolvedIds[source] =
+						module.resolvedIds[source] ||
+						this.handleResolveId(
+							await this.resolveId(source, module.id, EMPTY_OBJECT),
+							source,
+							module.id
+						))
+				)
+			)
+		)) {
+			module.dependencies.add(dependency);
+			dependency.importers.push(module.id);
+		}
+	}
+
+	private getNormalizedResolvedIdWithoutDefaults(
+		resolveIdResult: ResolveIdResult,
+		importer: string | undefined,
+		source: string
+	): (PartialResolvedId & { external: boolean }) | null {
+		if (resolveIdResult) {
+			if (typeof resolveIdResult === 'object') {
+				return {
+					...resolveIdResult,
+					external:
+						resolveIdResult.external || this.options.external(resolveIdResult.id, importer, true)
+				};
+			}
+			const external = this.options.external(resolveIdResult, importer, true);
+			return {
+				external,
+				id: external ? normalizeRelativeExternalId(resolveIdResult, importer) : resolveIdResult
+			};
+		}
+		const id = normalizeRelativeExternalId(source, importer);
+		if (resolveIdResult !== false && !this.options.external(id, importer, true)) {
+			return null;
+		}
+		return {
+			external: true,
+			id
+		};
 	}
 
 	private handleResolveId(
@@ -398,83 +417,60 @@ export class ModuleLoader {
 			if (isRelative(source)) {
 				return error(errUnresolvedImport(source, importer));
 			}
-			this.graph.warn(errUnresolvedImportTreatedAsExternal(source, importer));
+			this.options.onwarn(errUnresolvedImportTreatedAsExternal(source, importer));
 			return {
 				external: true,
 				id: source,
+				meta: EMPTY_OBJECT,
 				moduleSideEffects: this.hasModuleSideEffects(source, true),
 				syntheticNamedExports: false
 			};
 		} else {
 			if (resolvedId.external && resolvedId.syntheticNamedExports) {
-				this.graph.warn(errExternalSyntheticExports(source, importer));
+				this.options.onwarn(errExternalSyntheticExports(source, importer));
 			}
 		}
 		return resolvedId;
 	}
 
-	private loadEntryModule = (unresolvedId: string, isEntry: boolean): Promise<Module> =>
-		this.pluginDriver.hookFirst('resolveId', [unresolvedId, undefined]).then(resolveIdResult => {
-			if (
-				resolveIdResult === false ||
-				(resolveIdResult && typeof resolveIdResult === 'object' && resolveIdResult.external)
-			) {
-				return error(errEntryCannotBeExternal(unresolvedId));
-			}
-			const id =
-				resolveIdResult && typeof resolveIdResult === 'object'
-					? resolveIdResult.id
-					: resolveIdResult;
-
-			if (typeof id === 'string') {
-				return this.fetchModule(id, undefined as any, true, false, isEntry);
-			}
-			return error(errUnresolvedEntry(unresolvedId));
-		});
-
-	private normalizeResolveIdResult(
-		resolveIdResult: ResolveIdResult,
-		importer: string,
-		source: string
-	): ResolvedId | null {
-		let id = '';
-		let external = false;
-		let moduleSideEffects = null;
-		let syntheticNamedExports = false;
-		if (resolveIdResult) {
-			if (typeof resolveIdResult === 'object') {
-				id = resolveIdResult.id;
-				if (resolveIdResult.external) {
-					external = true;
-				}
-				if (typeof resolveIdResult.moduleSideEffects === 'boolean') {
-					moduleSideEffects = resolveIdResult.moduleSideEffects;
-				}
-				if (typeof resolveIdResult.syntheticNamedExports === 'boolean') {
-					syntheticNamedExports = resolveIdResult.syntheticNamedExports;
-				}
-			} else {
-				if (this.isExternal(resolveIdResult, importer, true)) {
-					external = true;
-				}
-				id = external ? normalizeRelativeExternalId(importer, resolveIdResult) : resolveIdResult;
-			}
-		} else {
-			id = normalizeRelativeExternalId(importer, source);
-			if (resolveIdResult !== false && !this.isExternal(id, importer, true)) {
-				return null;
-			}
-			external = true;
+	private async loadEntryModule(
+		unresolvedId: string,
+		isEntry: boolean,
+		importer: string | undefined,
+		implicitlyLoadedBefore: string | null
+	): Promise<Module> {
+		const resolveIdResult = await resolveId(
+			unresolvedId,
+			importer,
+			this.options.preserveSymlinks,
+			this.pluginDriver,
+			null,
+			EMPTY_OBJECT
+		);
+		if (resolveIdResult == null) {
+			return error(
+				implicitlyLoadedBefore === null
+					? errUnresolvedEntry(unresolvedId)
+					: errUnresolvedImplicitDependant(unresolvedId, implicitlyLoadedBefore)
+			);
 		}
-		return {
-			external,
-			id,
-			moduleSideEffects:
-				typeof moduleSideEffects === 'boolean'
-					? moduleSideEffects
-					: this.hasModuleSideEffects(id, external),
-			syntheticNamedExports
-		};
+		if (
+			resolveIdResult === false ||
+			(typeof resolveIdResult === 'object' && resolveIdResult.external)
+		) {
+			return error(
+				implicitlyLoadedBefore === null
+					? errEntryCannotBeExternal(unresolvedId)
+					: errImplicitDependantCannotBeExternal(unresolvedId, implicitlyLoadedBefore)
+			);
+		}
+		return this.fetchModule(
+			this.addDefaultsToResolvedId(
+				typeof resolveIdResult === 'object' ? resolveIdResult : { id: resolveIdResult }
+			)!,
+			undefined,
+			isEntry
+		);
 	}
 
 	private async resolveDynamicImport(
@@ -482,7 +478,6 @@ export class ModuleLoader {
 		specifier: string | acorn.Node,
 		importer: string
 	): Promise<ResolvedId | string | null> {
-		// TODO we only should expose the acorn AST here
 		const resolution = await this.pluginDriver.hookFirst('resolveDynamicImport', [
 			specifier,
 			importer
@@ -503,12 +498,43 @@ export class ModuleLoader {
 		if (resolution == null) {
 			return (module.resolvedIds[specifier] =
 				module.resolvedIds[specifier] ||
-				this.handleResolveId(await this.resolveId(specifier, module.id), specifier, module.id));
+				this.handleResolveId(
+					await this.resolveId(specifier, module.id, EMPTY_OBJECT),
+					specifier,
+					module.id
+				));
 		}
 		return this.handleResolveId(
-			this.normalizeResolveIdResult(resolution, importer, specifier),
+			this.addDefaultsToResolvedId(
+				this.getNormalizedResolvedIdWithoutDefaults(resolution, importer, specifier)
+			),
 			specifier,
 			importer
 		);
+	}
+}
+
+function normalizeRelativeExternalId(source: string, importer: string | undefined): string {
+	return isRelative(source)
+		? importer
+			? resolve(importer, '..', source)
+			: resolve(source)
+		: source;
+}
+
+function addChunkNamesToModule(
+	module: Module,
+	{ fileName, name }: UnresolvedModule,
+	isUserDefined: boolean
+) {
+	if (fileName !== null) {
+		module.chunkFileNames.add(fileName);
+	} else if (name !== null) {
+		if (module.chunkName === null) {
+			module.chunkName = name;
+		}
+		if (isUserDefined) {
+			module.userChunkNames.add(name);
+		}
 	}
 }

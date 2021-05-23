@@ -7,13 +7,14 @@ import path from 'path';
 import { string } from 'rollup-plugin-string';
 import { terser } from 'rollup-plugin-terser';
 import typescript from 'rollup-plugin-typescript';
-import addBinShebang from './build-plugins/add-bin-shebang';
+import addCliEntry from './build-plugins/add-cli-entry.js';
 import conditionalFsEventsImport from './build-plugins/conditional-fsevents-import';
 import emitModulePackageFile from './build-plugins/emit-module-package-file.js';
+import esmDynamicImport from './build-plugins/esm-dynamic-import.js';
 import getLicenseHandler from './build-plugins/generate-license-file';
 import pkg from './package.json';
 
-const commitHash = (function() {
+const commitHash = (function () {
 	try {
 		return fs.readFileSync('.commithash', 'utf-8');
 	} catch (err) {
@@ -48,7 +49,14 @@ const moduleAliases = {
 	resolve: ['.js', '.json', '.md'],
 	entries: [
 		{ find: 'help.md', replacement: path.resolve('cli/help.md') },
-		{ find: 'package.json', replacement: path.resolve('package.json') }
+		{ find: 'package.json', replacement: path.resolve('package.json') },
+		{
+			find: 'acorn-numeric-separator',
+			replacement: path.join(
+				__dirname,
+				'node_modules/acorn-numeric-separator/dist/acorn-numeric-separator.js'
+			)
+		}
 	]
 };
 
@@ -73,10 +81,15 @@ export default command => {
 	const commonJSBuild = {
 		input: {
 			'rollup.js': 'src/node-entry.ts',
-			'bin/rollup': 'cli/index.ts'
+			'loadConfigFile.js': 'cli/run/loadConfigFile.ts'
 		},
 		onwarn,
-		plugins: [...nodePlugins, addBinShebang(), !command.configTest && collectLicenses()],
+		plugins: [
+			...nodePlugins,
+			addCliEntry(),
+			esmDynamicImport(),
+			!command.configTest && collectLicenses()
+		],
 		// fsevents is a dependency of chokidar that cannot be bundled as it contains binary code
 		external: [
 			'assert',
@@ -88,19 +101,28 @@ export default command => {
 			'path',
 			'os',
 			'stream',
+			'url',
 			'util'
 		],
 		treeshake,
-		manualChunks: { rollup: ['src/node-entry.ts'] },
+		strictDeprecations: true,
 		output: {
 			banner,
 			chunkFileNames: 'shared/[name].js',
 			dir: 'dist',
 			entryFileNames: '[name]',
+			// TODO Only loadConfigFile is using default exports mode; this should be changed in Rollup@3
+			exports: 'auto',
 			externalLiveBindings: false,
 			format: 'cjs',
 			freeze: false,
-			interop: false,
+			interop: id => {
+				if (id === 'fsevents') {
+					return 'defaultOnly';
+				}
+				return 'default';
+			},
+			manualChunks: { rollup: ['src/node-entry.ts'] },
 			sourcemap: true
 		}
 	};
@@ -113,7 +135,13 @@ export default command => {
 		...commonJSBuild,
 		input: { 'rollup.js': 'src/node-entry.ts' },
 		plugins: [...nodePlugins, emitModulePackageFile(), collectLicenses()],
-		output: { ...commonJSBuild.output, dir: 'dist/es', format: 'es', sourcemap: false }
+		output: {
+			...commonJSBuild.output,
+			dir: 'dist/es',
+			format: 'es',
+			sourcemap: false,
+			minifyInternalExports: false
+		}
 	};
 
 	const browserBuilds = {
@@ -137,6 +165,7 @@ export default command => {
 			writeLicense()
 		],
 		treeshake,
+		strictDeprecations: true,
 		output: [
 			{ file: 'dist/rollup.browser.js', format: 'umd', name: 'rollup', banner },
 			{ file: 'dist/es/rollup.browser.js', format: 'es', banner }

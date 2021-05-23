@@ -1,4 +1,5 @@
 import MagicString from 'magic-string';
+import { NormalizedTreeshakingOptions } from '../../rollup/types';
 import { BLANK } from '../../utils/blank';
 import {
 	findFirstOccurrenceOutsideComment,
@@ -22,11 +23,13 @@ import * as NodeType from './NodeType';
 import { ExpressionEntity } from './shared/Expression';
 import { ExpressionNode, IncludeChildren, INCLUDE_PARAMETERS, NodeBase } from './shared/Node';
 import SpreadElement from './SpreadElement';
+import Super from './Super';
 
 export default class CallExpression extends NodeBase implements DeoptimizableEntity {
 	annotatedPure?: boolean;
 	arguments!: (ExpressionNode | SpreadElement)[];
-	callee!: ExpressionNode;
+	callee!: ExpressionNode | Super;
+	optional!: boolean;
 	type!: NodeType.tCallExpression;
 
 	private callOptions!: CallOptions;
@@ -40,7 +43,7 @@ export default class CallExpression extends NodeBase implements DeoptimizableEnt
 			const variable = this.scope.findVariable(this.callee.name);
 
 			if (variable.isNamespace) {
-				return this.context.error(
+				this.context.warn(
 					{
 						code: 'CANNOT_CALL_NAMESPACE',
 						message: `Cannot call a namespace ('${this.callee.name}')`
@@ -153,7 +156,11 @@ export default class CallExpression extends NodeBase implements DeoptimizableEnt
 		for (const argument of this.arguments) {
 			if (argument.hasEffects(context)) return true;
 		}
-		if (this.context.annotations && this.annotatedPure) return false;
+		if (
+			(this.context.options.treeshake as NormalizedTreeshakingOptions).annotations &&
+			this.annotatedPure
+		)
+			return false;
 		return (
 			this.callee.hasEffects(context) ||
 			this.callee.hasEffectsWhenCalledAtPath(EMPTY_PATH, this.callOptions, context)
@@ -184,7 +191,7 @@ export default class CallExpression extends NodeBase implements DeoptimizableEnt
 		const trackedExpressions = (callOptions.withNew
 			? context.instantiated
 			: context.called
-		).getEntities(path);
+		).getEntities(path, callOptions);
 		if (trackedExpressions.has(this)) return false;
 		trackedExpressions.add(this);
 		return this.returnExpression!.hasEffectsWhenCalledAtPath(path, callOptions, context);

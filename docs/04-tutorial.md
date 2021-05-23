@@ -282,7 +282,9 @@ var version=function(){"use strict";var n="1.0.0";return function(){console.log(
 
 ### Code Splitting
 
-To use the code splitting feature, we go back to the original example and modify `src/main.js` to load `src/foo.js` dynamically instead of statically:
+For code splitting, there are cases where Rollup splits code into chunks automatically, like dynamic loading or multiple entry points, and there is a way to explicitly tell Rollup which modules to split into separate chunks via the [`output.manualChunks`](guide/en/#outputmanualchunks) option.
+
+To use the code splitting feature to achieve the lazy dynamic loading (where some imported module(s) is only loaded after executing a function), we go back to the original example and modify `src/main.js` to load `src/foo.js` dynamically instead of statically:
 
 ```js
 // src/main.js
@@ -381,7 +383,7 @@ You can build the same code for the browser via native ES modules, an AMD loader
 For example, with `-f es` for native modules:
 
 ```
-rollup src/main.js src/main2.js -f esm -d dist
+rollup src/main.js src/main2.js -f es -d dist
 ```
 
 ```html
@@ -408,7 +410,7 @@ And then load either or both entry points in an HTML page as needed:
 
 ```html
 <!doctype html>
-<script src="node_modules/systemjs/dist/system-production.js"></script>
+<script src="node_modules/systemjs/dist/s.min.js"></script>
 <script>
   System.import('./dist/main2.js')
   .then(({ default: main }) => main());

@@ -32,7 +32,7 @@ describe('rollup.watch', () => {
 		return require(resolved);
 	}
 
-	function sequence(watcher, events) {
+	function sequence(watcher, events, timeout = 300) {
 		return new Promise((fulfil, reject) => {
 			function go(event) {
 				const next = events.shift();
@@ -52,7 +52,7 @@ describe('rollup.watch', () => {
 					});
 				} else {
 					Promise.resolve()
-						.then(() => wait(100)) // gah, this appears to be necessary to fix random errors
+						.then(() => wait(timeout)) // gah, this appears to be necessary to fix random errors
 						.then(() => next(event))
 						.then(go)
 						.catch(error => {
@@ -63,7 +63,12 @@ describe('rollup.watch', () => {
 			}
 
 			go();
-		});
+		}).then(() => wait(100));
+	}
+
+	function getTimeDiffInMs(previous) {
+		const [seconds, nanoseconds] = process.hrtime(previous);
+		return seconds * 1e3 + nanoseconds / 1e6;
 	}
 
 	it('watches a file and triggers reruns if necessary', () => {
@@ -76,7 +81,11 @@ describe('rollup.watch', () => {
 				watcher = rollup.watch({
 					input: 'test/_tmp/input/main.js',
 					plugins: {
+						options(options) {
+							assert.strictEqual(this.meta.watchMode, true, 'watchMode in options');
+						},
 						transform(code) {
+							assert.strictEqual(this.meta.watchMode, true, 'watchMode in transform');
 							if (triggerRestart) {
 								triggerRestart = false;
 								return wait(100)
@@ -88,7 +97,8 @@ describe('rollup.watch', () => {
 					},
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -138,7 +148,8 @@ describe('rollup.watch', () => {
 					},
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -165,8 +176,216 @@ describe('rollup.watch', () => {
 			});
 	});
 
-	it('passes file events to the watchChange plugin hook once for each change', () => {
+	it('passes file events to the watchChange plugin hook once for each change', async () => {
 		let watchChangeCnt = 0;
+		await sander.copydir('test/watch/samples/basic').to('test/_tmp/input');
+		await wait(100);
+		watcher = rollup.watch({
+			input: 'test/_tmp/input/main.js',
+			output: {
+				file: 'test/_tmp/output/bundle.js',
+				format: 'cjs',
+				exports: 'auto'
+			},
+			plugins: {
+				watchChange(id) {
+					watchChangeCnt++;
+					assert.strictEqual(id, path.resolve('test/_tmp/input/main.js'));
+				}
+			}
+		});
+
+		return sequence(watcher, [
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				watchChangeCnt = 0;
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+				sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
+				assert.strictEqual(watchChangeCnt, 1);
+				sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
+				assert.strictEqual(watchChangeCnt, 2);
+				sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
+				assert.strictEqual(watchChangeCnt, 3);
+			}
+		]);
+	});
+
+	it('passes change parameter to the watchChange plugin hook', async () => {
+		const WATCHED_ID = path.resolve('test/_tmp/input/watched');
+		const events = [];
+		let ids;
+		const expectedIds = [WATCHED_ID, path.resolve('test/_tmp/input/main.js')];
+		await sander.copydir('test/watch/samples/watch-files').to('test/_tmp/input');
+		await sander.unlink(WATCHED_ID);
+		await wait(100);
+		watcher = rollup.watch({
+			input: 'test/_tmp/input/main.js',
+			output: {
+				file: 'test/_tmp/output/bundle.js',
+				format: 'cjs',
+				exports: 'auto'
+			},
+			plugins: {
+				buildStart() {
+					this.addWatchFile(WATCHED_ID);
+				},
+				watchChange(id, { event }) {
+					assert.strictEqual(id, WATCHED_ID);
+					events.push(event);
+				},
+				buildEnd() {
+					ids = this.getWatchFiles();
+				}
+			}
+		});
+
+		return sequence(watcher, [
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+				assert.deepStrictEqual(events, []);
+				assert.deepStrictEqual(ids, expectedIds);
+				sander.writeFileSync(WATCHED_ID, 'first');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+				assert.deepStrictEqual(events, ['create']);
+				assert.deepStrictEqual(ids, expectedIds);
+				sander.writeFileSync(WATCHED_ID, 'first');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+				assert.deepStrictEqual(events, ['create', 'update']);
+				assert.deepStrictEqual(ids, expectedIds);
+				sander.unlinkSync(WATCHED_ID);
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+				assert.deepStrictEqual(events, ['create', 'update', 'delete']);
+				assert.deepStrictEqual(ids, expectedIds);
+			}
+		]);
+	});
+
+	it('correctly rewrites change event during build delay', async () => {
+		const WATCHED_ID = path.resolve('test/_tmp/input/watched');
+		const MAIN_ID = path.resolve('test/_tmp/input/main.js');
+		let lastEvent = null;
+		await sander.copydir('test/watch/samples/watch-files').to('test/_tmp/input');
+		await wait(100);
+		watcher = rollup.watch({
+			input: 'test/_tmp/input/main.js',
+			output: {
+				file: 'test/_tmp/output/bundle.js',
+				format: 'cjs',
+				exports: 'auto'
+			},
+			watch: {
+				buildDelay: 300,
+				chokidar: {
+					atomic: false
+				}
+			},
+			plugins: {
+				buildStart() {
+					this.addWatchFile(WATCHED_ID);
+				},
+				watchChange(id, { event }) {
+					if (id === WATCHED_ID) {
+						assert.strictEqual(lastEvent, null);
+						lastEvent = event;
+					}
+				}
+			}
+		});
+
+		return sequence(watcher, [
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			async () => {
+				assert.strictEqual(lastEvent, null);
+				sander.writeFileSync(WATCHED_ID, 'another');
+				await wait(100);
+				sander.unlinkSync(WATCHED_ID);
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			async () => {
+				assert.strictEqual(lastEvent, 'delete');
+				lastEvent = null;
+				sander.writeFileSync(WATCHED_ID, '123');
+				await wait(100);
+				sander.unlinkSync(WATCHED_ID);
+				// To ensure there is always another change to trigger a rebuild
+				sander.writeFileSync(MAIN_ID, 'export default 43;');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			async () => {
+				assert.strictEqual(lastEvent, null);
+				sander.writeFileSync(WATCHED_ID, '123');
+				await wait(100);
+				sander.writeFileSync(WATCHED_ID, 'asd');
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(lastEvent, 'create');
+			}
+		]);
+	}).timeout(20000);
+
+	it('calls closeWatcher plugin hook', () => {
+		let calls = 0;
+		let ctx1;
+		let ctx2;
 		return sander
 			.copydir('test/watch/samples/basic')
 			.to('test/_tmp/input')
@@ -175,14 +394,29 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					},
-					plugins: {
-						watchChange(id) {
-							watchChangeCnt++;
-							assert.strictEqual(id, path.resolve('test/_tmp/input/main.js'));
+					plugins: [
+						{
+							buildStart() {
+								ctx1 = this;
+							},
+							closeWatcher() {
+								assert.strictEqual(ctx1, this);
+								calls++;
+							}
+						},
+						{
+							buildStart() {
+								ctx2 = this;
+							},
+							closeWatcher() {
+								assert.strictEqual(ctx2, this);
+								calls++;
+							}
 						}
-					}
+					]
 				});
 
 				return sequence(watcher, [
@@ -192,34 +426,12 @@ describe('rollup.watch', () => {
 					'END',
 					() => {
 						assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
-						assert.strictEqual(watchChangeCnt, 0);
-						sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
-					},
-					'START',
-					'BUNDLE_START',
-					'BUNDLE_END',
-					'END',
-					() => {
-						assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
-						assert.strictEqual(watchChangeCnt, 1);
-						sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
-					},
-					'START',
-					'BUNDLE_START',
-					'BUNDLE_END',
-					'END',
-					() => {
-						assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
-						assert.strictEqual(watchChangeCnt, 2);
-						sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
-					},
-					'START',
-					'BUNDLE_START',
-					'BUNDLE_END',
-					'END',
-					() => {
-						assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
-						assert.strictEqual(watchChangeCnt, 3);
+						assert.ok(ctx1);
+						assert.ok(ctx2);
+						watcher.once('close', () => {
+							assert.strictEqual(calls, 2);
+						});
+						watcher.close();
 					}
 				]);
 			});
@@ -234,7 +446,8 @@ describe('rollup.watch', () => {
 					input: ['test/_tmp/input/main1.js', 'test/_tmp/input/main2.js'],
 					output: {
 						dir: 'test/_tmp/output',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -272,7 +485,8 @@ describe('rollup.watch', () => {
 					},
 					output: {
 						dir: 'test/_tmp/output',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -307,7 +521,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -346,7 +561,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -386,7 +602,8 @@ describe('rollup.watch', () => {
 					},
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -418,7 +635,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -459,7 +677,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -491,46 +710,6 @@ describe('rollup.watch', () => {
 			});
 	});
 
-	it('recovers from an error even when erroring dependency was "renamed" (#38)', () => {
-		return sander
-			.copydir('test/watch/samples/dependency')
-			.to('test/_tmp/input')
-			.then(() => {
-				watcher = rollup.watch({
-					input: 'test/_tmp/input/main.js',
-					output: {
-						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
-					}
-				});
-
-				return sequence(watcher, [
-					'START',
-					'BUNDLE_START',
-					'BUNDLE_END',
-					'END',
-					() => {
-						assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
-						sander.unlinkSync('test/_tmp/input/dep.js');
-						sander.writeFileSync('test/_tmp/input/dep.js', 'export nope;');
-					},
-					'START',
-					'BUNDLE_START',
-					'ERROR',
-					() => {
-						sander.unlinkSync('test/_tmp/input/dep.js');
-						sander.writeFileSync('test/_tmp/input/dep.js', 'export const value = 43;');
-					},
-					'START',
-					'BUNDLE_START',
-					'BUNDLE_END',
-					'END',
-					() => {
-						assert.strictEqual(run('../_tmp/output/bundle.js'), 44);
-					}
-				]);
-			});
-	});
 	it('handles closing the watcher during a build', () => {
 		return sander
 			.copydir('test/watch/samples/basic')
@@ -545,7 +724,8 @@ describe('rollup.watch', () => {
 					},
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 				const events = [];
@@ -576,7 +756,8 @@ describe('rollup.watch', () => {
 					},
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 				const events = [];
@@ -602,7 +783,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -641,7 +823,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -681,7 +864,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					},
 					watch: {
 						include: ['test/_tmp/input/+(main|foo).js']
@@ -735,7 +919,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					},
 					watch: {
 						exclude: ['test/_tmp/input/bar.js']
@@ -791,14 +976,16 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main1.js',
 						output: {
 							file: 'test/_tmp/output/bundle1.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						}
 					},
 					{
 						input: 'test/_tmp/input/main2.js',
 						output: {
 							file: 'test/_tmp/output/bundle2.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						}
 					}
 				]);
@@ -822,6 +1009,52 @@ describe('rollup.watch', () => {
 					() => {
 						assert.deepStrictEqual(run('../_tmp/output/bundle1.js'), 42);
 						assert.deepStrictEqual(run('../_tmp/output/bundle2.js'), 44);
+					}
+				]);
+			});
+	});
+
+	it('allows watching only some configs', () => {
+		return sander
+			.copydir('test/watch/samples/multiple')
+			.to('test/_tmp/input')
+			.then(() => wait(100))
+			.then(() => {
+				watcher = rollup.watch([
+					{
+						input: 'test/_tmp/input/main1.js',
+						watch: false,
+						output: {
+							file: 'test/_tmp/output/bundle1.js',
+							format: 'cjs',
+							exports: 'auto'
+						}
+					},
+					{
+						input: 'test/_tmp/input/main2.js',
+						output: {
+							file: 'test/_tmp/output/bundle2.js',
+							format: 'cjs',
+							exports: 'auto'
+						}
+					}
+				]);
+
+				return sequence(watcher, [
+					'START',
+					'BUNDLE_START',
+					'BUNDLE_END',
+					'END',
+					() => {
+						assert.strictEqual(
+							sander.existsSync(path.resolve(__dirname, '../_tmp/output/bundle1.js')),
+							false
+						);
+						assert.strictEqual(
+							sander.existsSync(path.resolve(__dirname, '../_tmp/output/bundle2.js')),
+							true
+						);
+						assert.deepStrictEqual(run('../_tmp/output/bundle2.js'), 43);
 					}
 				]);
 			});
@@ -868,7 +1101,8 @@ describe('rollup.watch', () => {
 					input: 'test/_tmp/input/main.js',
 					output: {
 						file: 'test/_tmp/output/bundle.js',
-						format: 'cjs'
+						format: 'cjs',
+						exports: 'auto'
 					}
 				});
 
@@ -905,6 +1139,7 @@ describe('rollup.watch', () => {
 					output: {
 						dir: 'test/_tmp/output',
 						format: 'cjs',
+						exports: 'auto',
 						entryFileNames: '[name].[hash].js',
 						chunkFileNames: '[name].[hash].js'
 					}
@@ -981,7 +1216,8 @@ describe('rollup.watch', () => {
 			},
 			output: {
 				file: 'test/_tmp/output/bundle.js',
-				format: 'cjs'
+				format: 'cjs',
+				exports: 'auto'
 			}
 		});
 		return sequence(watcher, [
@@ -1009,9 +1245,191 @@ describe('rollup.watch', () => {
 		]);
 	});
 
+	it('skips filesystem writes when configured', () => {
+		let watchChangeCnt = 0;
+		return sander
+			.copydir('test/watch/samples/skip-writes')
+			.to('test/_tmp/input')
+			.then(() => {
+				watcher = rollup.watch({
+					input: 'test/_tmp/input/main.js',
+					output: {
+						file: 'test/_tmp/output/bundle.js',
+						format: 'cjs',
+						exports: 'auto'
+					},
+					watch: {
+						skipWrite: true
+					},
+					plugins: {
+						watchChange(id) {
+							watchChangeCnt++;
+							assert.strictEqual(id, path.resolve('test/_tmp/input/main.js'));
+						}
+					}
+				});
+
+				return sequence(watcher, [
+					'START',
+					'BUNDLE_START',
+					'BUNDLE_END',
+					'END',
+					() => {
+						watchChangeCnt = 0;
+						assert.strictEqual(sander.existsSync('../_tmp/output/bundle.js'), false);
+						sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+					},
+					'START',
+					'BUNDLE_START',
+					'BUNDLE_END',
+					'END',
+					() => {
+						assert.strictEqual(sander.existsSync('../_tmp/output/bundle.js'), false);
+						assert.strictEqual(watchChangeCnt, 1);
+						sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+					},
+					'START',
+					'BUNDLE_START',
+					'BUNDLE_END',
+					'END',
+					() => {
+						assert.strictEqual(sander.existsSync('../_tmp/output/bundle.js'), false);
+						assert.strictEqual(watchChangeCnt, 2);
+						sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+					},
+					'START',
+					'BUNDLE_START',
+					'BUNDLE_END',
+					// 'END',
+					evt => {
+						assert.strictEqual(sander.existsSync('../_tmp/output/bundle.js'), false);
+						assert.strictEqual(watchChangeCnt, 3);
+						// still aware of its output destination
+						assert.strictEqual(evt.output[0], path.resolve('test/_tmp/output/bundle.js'));
+					}
+				]);
+			});
+	});
+
+	it('rebuilds immediately by default', async () => {
+		await sander.copydir('test/watch/samples/basic').to('test/_tmp/input');
+		watcher = rollup.watch({
+			input: 'test/_tmp/input/main.js',
+			output: {
+				file: 'test/_tmp/output/bundle.js',
+				format: 'cjs',
+				exports: 'auto'
+			}
+		});
+
+		let startTime;
+		return sequence(
+			watcher,
+			[
+				'START',
+				'BUNDLE_START',
+				'BUNDLE_END',
+				'END',
+				() => {
+					assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+					sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+					startTime = process.hrtime();
+				},
+				'START',
+				'BUNDLE_START',
+				'BUNDLE_END',
+				'END',
+				() => {
+					assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
+					const timeDiff = getTimeDiffInMs(startTime);
+					assert.ok(timeDiff < 400, `Time difference ${timeDiff} < 400`);
+				}
+			],
+			0
+		);
+	});
+
+	it('observes configured build delays', async () => {
+		await sander.copydir('test/watch/samples/basic').to('test/_tmp/input');
+		watcher = rollup.watch(
+			[
+				{
+					input: 'test/_tmp/input/main.js',
+					output: {
+						file: 'test/_tmp/output/bundle.js',
+						format: 'cjs',
+						exports: 'auto'
+					}
+				},
+				{
+					input: 'test/_tmp/input/main.js',
+					watch: { clearScreen: true },
+					output: {
+						file: 'test/_tmp/output/bundle.js',
+						format: 'cjs',
+						exports: 'auto'
+					}
+				},
+				{
+					input: 'test/_tmp/input/main.js',
+					watch: { buildDelay: 1000 },
+					output: {
+						file: 'test/_tmp/output/bundle.js',
+						format: 'cjs',
+						exports: 'auto'
+					}
+				},
+				{
+					input: 'test/_tmp/input/main.js',
+					watch: { buildDelay: 50 },
+					output: {
+						file: 'test/_tmp/output/bundle.js',
+						format: 'cjs',
+						exports: 'auto'
+					}
+				}
+			],
+			0
+		);
+
+		let startTime;
+		return sequence(watcher, [
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
+				sander.writeFileSync('test/_tmp/input/main.js', 'export default 43;');
+				startTime = process.hrtime();
+			},
+			'START',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'BUNDLE_START',
+			'BUNDLE_END',
+			'END',
+			() => {
+				assert.strictEqual(run('../_tmp/output/bundle.js'), 43);
+				const timeDiff = getTimeDiffInMs(startTime);
+				assert.ok(timeDiff > 1000, `Time difference ${timeDiff} > 1000`);
+			}
+		]);
+	});
+
 	describe('addWatchFile', () => {
 		it('supports adding additional watch files in plugin hooks', () => {
-			const watchChangeIds = [];
+			const watchChangeIds = new Set();
 			const buildStartFile = path.resolve('test/_tmp/input/buildStart');
 			const loadFile = path.resolve('test/_tmp/input/load');
 			const resolveIdFile = path.resolve('test/_tmp/input/resolveId');
@@ -1026,7 +1444,8 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main.js',
 						output: {
 							file: 'test/_tmp/output/bundle.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						},
 						plugins: {
 							buildStart() {
@@ -1042,7 +1461,7 @@ describe('rollup.watch', () => {
 								this.addWatchFile(transformFile);
 							},
 							watchChange(id) {
-								watchChangeIds.push(id);
+								watchChangeIds.add(id);
 							}
 						}
 					});
@@ -1054,7 +1473,8 @@ describe('rollup.watch', () => {
 						'END',
 						() => {
 							assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
-							assert.deepStrictEqual(watchChangeIds, []);
+							// sometimes the watcher is triggered during the initial run
+							watchChangeIds.clear();
 							for (const file of watchFiles) sander.writeFileSync(file, 'changed');
 						},
 						'START',
@@ -1063,13 +1483,14 @@ describe('rollup.watch', () => {
 						'END',
 						() => {
 							assert.strictEqual(run('../_tmp/output/bundle.js'), 42);
-							assert.deepStrictEqual(watchChangeIds.sort(), watchFiles.sort());
+							assert.deepStrictEqual([...watchChangeIds].sort(), watchFiles.sort());
 						}
 					]);
 				});
 		});
 
 		it('respects changed watched files in the load hook', () => {
+			const WATCHED_ID = path.resolve('test/_tmp/input/watched');
 			return sander
 				.copydir('test/watch/samples/watch-files')
 				.to('test/_tmp/input')
@@ -1078,15 +1499,13 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main.js',
 						output: {
 							file: 'test/_tmp/output/bundle.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						},
 						plugins: {
 							load() {
-								this.addWatchFile('test/_tmp/input/watched');
-								return `export default "${sander
-									.readFileSync('test/_tmp/input/watched')
-									.toString()
-									.trim()}"`;
+								this.addWatchFile(WATCHED_ID);
+								return `export default "${sander.readFileSync(WATCHED_ID).toString().trim()}"`;
 							}
 						}
 					});
@@ -1098,7 +1517,7 @@ describe('rollup.watch', () => {
 						'END',
 						() => {
 							assert.strictEqual(run('../_tmp/output/bundle.js'), 'initial');
-							sander.writeFileSync('test/_tmp/input/watched', 'next');
+							sander.writeFileSync(WATCHED_ID, 'next');
 						},
 						'START',
 						'BUNDLE_START',
@@ -1112,6 +1531,7 @@ describe('rollup.watch', () => {
 		});
 
 		it('respects changed watched files in the transform hook and removes them if they are no longer watched', () => {
+			const WATCHED_ID = path.resolve('test/_tmp/input/watched');
 			let addWatchFile = true;
 			return sander
 				.copydir('test/watch/samples/watch-files')
@@ -1121,7 +1541,8 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main.js',
 						output: {
 							file: 'test/_tmp/output/bundle.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						},
 						plugins: {
 							resolveId(id) {
@@ -1139,10 +1560,10 @@ describe('rollup.watch', () => {
 									return `export { value as default } from 'dep';`;
 								} else {
 									if (addWatchFile) {
-										this.addWatchFile('test/_tmp/input/watched');
+										this.addWatchFile(WATCHED_ID);
 									}
 									return `export const value = "${sander
-										.readFileSync('test/_tmp/input/watched')
+										.readFileSync(WATCHED_ID)
 										.toString()
 										.trim()}"`;
 								}
@@ -1160,7 +1581,7 @@ describe('rollup.watch', () => {
 						() => {
 							assert.strictEqual(run('../_tmp/output/bundle.js'), 'initial');
 							addWatchFile = false;
-							sander.writeFileSync('test/_tmp/input/watched', 'next');
+							sander.writeFileSync(WATCHED_ID, 'next');
 						},
 						'START',
 						'BUNDLE_START',
@@ -1168,7 +1589,7 @@ describe('rollup.watch', () => {
 						'END',
 						() => {
 							assert.strictEqual(run('../_tmp/output/bundle.js'), 'next');
-							sander.writeFileSync('test/_tmp/input/watched', 'other');
+							sander.writeFileSync(WATCHED_ID, 'other');
 							events.length = 0;
 							return wait(400).then(() => assert.deepStrictEqual(events, []));
 						}
@@ -1185,16 +1606,14 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main.js',
 						output: {
 							file: 'test/_tmp/output/bundle.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						},
 						plugins: {
 							transform(code, id) {
 								if (id.endsWith('dep1.js')) {
 									this.addWatchFile(path.resolve('test/_tmp/input/dep2.js'));
-									const text = sander
-										.readFileSync('test/_tmp/input/dep2.js')
-										.toString()
-										.trim();
+									const text = sander.readFileSync('test/_tmp/input/dep2.js').toString().trim();
 									return `export default ${JSON.stringify(text)}`;
 								}
 							}
@@ -1228,6 +1647,7 @@ describe('rollup.watch', () => {
 		});
 
 		it('respects changed watched directories in the transform hook', () => {
+			const WATCHED_ID = path.resolve('test/_tmp/input/watched');
 			return sander
 				.copydir('test/watch/samples/watch-files')
 				.to('test/_tmp/input')
@@ -1236,12 +1656,13 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main.js',
 						output: {
 							file: 'test/_tmp/output/bundle.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						},
 						plugins: {
 							transform() {
 								this.addWatchFile('test/_tmp/input');
-								return `export default ${sander.existsSync('test/_tmp/input/watched')}`;
+								return `export default ${sander.existsSync(WATCHED_ID)}`;
 							}
 						}
 					});
@@ -1253,7 +1674,7 @@ describe('rollup.watch', () => {
 						'END',
 						() => {
 							assert.strictEqual(run('../_tmp/output/bundle.js'), true);
-							sander.unlinkSync('test/_tmp/input/watched');
+							sander.unlinkSync(WATCHED_ID);
 						},
 						'START',
 						'BUNDLE_START',
@@ -1267,7 +1688,97 @@ describe('rollup.watch', () => {
 				});
 		});
 
+		it('respects initially missing added watched files', () => {
+			return sander
+				.copydir('test/watch/samples/basic')
+				.to('test/_tmp/input')
+				.then(() => {
+					watcher = rollup.watch({
+						input: 'test/_tmp/input/main.js',
+						output: {
+							file: 'test/_tmp/output/bundle.js',
+							format: 'cjs',
+							exports: 'auto'
+						},
+						plugins: {
+							transform() {
+								this.addWatchFile('test/_tmp/input/dep');
+								return `export default ${sander.existsSync('test/_tmp/input/dep')}`;
+							}
+						}
+					});
+
+					return sequence(watcher, [
+						'START',
+						'BUNDLE_START',
+						'BUNDLE_END',
+						'END',
+						() => {
+							assert.strictEqual(run('../_tmp/output/bundle.js'), false);
+							sander.writeFileSync('test/_tmp/input/dep', '');
+						},
+						'START',
+						'BUNDLE_START',
+						'BUNDLE_END',
+						'END',
+						() => {
+							assert.strictEqual(run('../_tmp/output/bundle.js'), true);
+						}
+					]);
+				});
+		});
+
+		it('respects unlinked and re-added watched files', () => {
+			return sander
+				.copydir('test/watch/samples/basic')
+				.to('test/_tmp/input')
+				.then(() => {
+					sander.writeFileSync('test/_tmp/input/dep', '');
+					watcher = rollup.watch({
+						input: 'test/_tmp/input/main.js',
+						output: {
+							file: 'test/_tmp/output/bundle.js',
+							format: 'cjs',
+							exports: 'auto'
+						},
+						plugins: {
+							transform() {
+								this.addWatchFile('test/_tmp/input/dep');
+								return `export default ${sander.existsSync('test/_tmp/input/dep')}`;
+							}
+						}
+					});
+
+					return sequence(watcher, [
+						'START',
+						'BUNDLE_START',
+						'BUNDLE_END',
+						'END',
+						() => {
+							assert.strictEqual(run('../_tmp/output/bundle.js'), true);
+							sander.unlinkSync('test/_tmp/input/dep');
+						},
+						'START',
+						'BUNDLE_START',
+						'BUNDLE_END',
+						'END',
+						() => {
+							assert.strictEqual(run('../_tmp/output/bundle.js'), false);
+							sander.writeFileSync('test/_tmp/input/dep', '');
+						},
+						'START',
+						'BUNDLE_START',
+						'BUNDLE_END',
+						'END',
+						() => {
+							assert.strictEqual(run('../_tmp/output/bundle.js'), true);
+						}
+					]);
+				});
+		});
+
 		it('does not rerun the transform hook if a non-watched change triggered the re-run', () => {
+			const WATCHED_ID = path.resolve('test/_tmp/input/watched');
 			let transformRuns = 0;
 			return sander
 				.copydir('test/watch/samples/watch-files')
@@ -1279,7 +1790,8 @@ describe('rollup.watch', () => {
 						input: 'test/_tmp/input/main.js',
 						output: {
 							file: 'test/_tmp/output/bundle.js',
-							format: 'cjs'
+							format: 'cjs',
+							exports: 'auto'
 						},
 						plugins: {
 							buildStart() {
@@ -1287,11 +1799,8 @@ describe('rollup.watch', () => {
 							},
 							transform() {
 								transformRuns++;
-								this.addWatchFile('test/_tmp/input/watched');
-								return `export default "${sander
-									.readFileSync('test/_tmp/input/watched')
-									.toString()
-									.trim()}"`;
+								this.addWatchFile(WATCHED_ID);
+								return `export default "${sander.readFileSync(WATCHED_ID).toString().trim()}"`;
 							}
 						}
 					});
@@ -1316,4 +1825,4 @@ describe('rollup.watch', () => {
 				});
 		});
 	});
-});
+}).timeout(20000);

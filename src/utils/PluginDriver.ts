@@ -1,20 +1,24 @@
+import Chunk from '../Chunk';
 import Graph from '../Graph';
+import Module from '../Module';
 import {
 	AddonHookFunction,
 	AsyncPluginHooks,
 	EmitFile,
 	FirstPluginHooks,
+	NormalizedInputOptions,
 	OutputBundleWithPlaceholders,
+	OutputPluginHooks,
 	ParallelPluginHooks,
 	Plugin,
 	PluginContext,
 	PluginHooks,
 	PluginValueHooks,
+	PreRenderedAsset,
 	SequentialPluginHooks,
 	SerializablePluginCache,
 	SyncPluginHooks
 } from '../rollup/types';
-import { getRollupDefaultPlugin } from './defaultPlugin';
 import { errInputHookInOutputPlugin, error } from './error';
 import { FileEmitter } from './FileEmitter';
 import { getPluginContexts } from './PluginContext';
@@ -36,6 +40,24 @@ type EnsurePromise<T> = Promise<ResolveValue<T>>;
  */
 type Arg0<H extends keyof PluginHooks> = Parameters<PluginHooks[H]>[0];
 
+// This will make sure no input hook is omitted
+type Subtract<T, U> = T extends U ? never : T;
+const inputHookNames: {
+	[P in Subtract<keyof PluginHooks, keyof OutputPluginHooks>]: 1;
+} = {
+	buildEnd: 1,
+	buildStart: 1,
+	closeWatcher: 1,
+	load: 1,
+	moduleParsed: 1,
+	options: 1,
+	resolveDynamicImport: 1,
+	resolveId: 1,
+	transform: 1,
+	watchChange: 1
+};
+const inputHooks = Object.keys(inputHookNames);
+
 type ReplaceContext = (context: PluginContext, plugin: Plugin) => PluginContext;
 
 function throwInvalidHookError(hookName: string, pluginName: string) {
@@ -51,42 +73,42 @@ export class PluginDriver {
 	public getFileName: (fileReferenceId: string) => string;
 	public setOutputBundle: (
 		outputBundle: OutputBundleWithPlaceholders,
-		assetFileNames: string
+		assetFileNames: string | ((assetInfo: PreRenderedAsset) => string),
+		facadeChunkByModule: Map<Module, Chunk>
 	) => void;
 
 	private fileEmitter: FileEmitter;
-	private graph: Graph;
 	private pluginCache: Record<string, SerializablePluginCache> | undefined;
 	private pluginContexts: PluginContext[];
 	private plugins: Plugin[];
-	private preserveSymlinks: boolean;
-	private previousHooks = new Set<string>(['options']);
 
 	constructor(
-		graph: Graph,
+		private readonly graph: Graph,
+		private readonly options: NormalizedInputOptions,
 		userPlugins: Plugin[],
 		pluginCache: Record<string, SerializablePluginCache> | undefined,
-		preserveSymlinks: boolean,
 		basePluginDriver?: PluginDriver
 	) {
-		warnDeprecatedHooks(userPlugins, graph);
-		this.graph = graph;
+		warnDeprecatedHooks(userPlugins, options);
 		this.pluginCache = pluginCache;
-		this.preserveSymlinks = preserveSymlinks;
-		this.fileEmitter = new FileEmitter(graph, basePluginDriver && basePluginDriver.fileEmitter);
+		this.fileEmitter = new FileEmitter(
+			graph,
+			options,
+			basePluginDriver && basePluginDriver.fileEmitter
+		);
 		this.emitFile = this.fileEmitter.emitFile;
 		this.getFileName = this.fileEmitter.getFileName;
 		this.finaliseAssets = this.fileEmitter.assertAssetsFinalized;
 		this.setOutputBundle = this.fileEmitter.setOutputBundle;
-		this.plugins = userPlugins.concat(
-			basePluginDriver ? basePluginDriver.plugins : [getRollupDefaultPlugin(preserveSymlinks)]
+		this.plugins = userPlugins.concat(basePluginDriver ? basePluginDriver.plugins : []);
+		this.pluginContexts = this.plugins.map(
+			getPluginContexts(pluginCache, graph, options, this.fileEmitter)
 		);
-		this.pluginContexts = this.plugins.map(getPluginContexts(pluginCache, graph, this.fileEmitter));
 		if (basePluginDriver) {
 			for (const plugin of userPlugins) {
-				for (const hook of basePluginDriver.previousHooks) {
+				for (const hook of inputHooks) {
 					if (hook in plugin) {
-						graph.warn(errInputHookInOutputPlugin(plugin.name, hook));
+						options.onwarn(errInputHookInOutputPlugin(plugin.name, hook));
 					}
 				}
 			}
@@ -94,7 +116,7 @@ export class PluginDriver {
 	}
 
 	public createOutputPluginDriver(plugins: Plugin[]): PluginDriver {
-		return new PluginDriver(this.graph, plugins, this.pluginCache, this.preserveSymlinks, this);
+		return new PluginDriver(this.graph, this.options, plugins, this.pluginCache, this);
 	}
 
 	// chains, first non-null result stops and returns
@@ -279,7 +301,6 @@ export class PluginDriver {
 		permitValues: boolean,
 		hookContext?: ReplaceContext | null
 	): EnsurePromise<ReturnType<PluginHooks[H]>> {
-		this.previousHooks.add(hookName);
 		const plugin = this.plugins[pluginIndex];
 		const hook = plugin[hookName];
 		if (!hook) return undefined as any;
@@ -314,7 +335,6 @@ export class PluginDriver {
 		pluginIndex: number,
 		hookContext?: ReplaceContext
 	): ReturnType<PluginHooks[H]> {
-		this.previousHooks.add(hookName);
 		const plugin = this.plugins[pluginIndex];
 		const hook = plugin[hookName];
 		if (!hook) return undefined as any;

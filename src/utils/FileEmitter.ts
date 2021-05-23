@@ -1,6 +1,14 @@
+import Chunk from '../Chunk';
 import Graph from '../Graph';
 import Module from '../Module';
-import { FilePlaceholder, OutputBundleWithPlaceholders } from '../rollup/types';
+import {
+	EmittedChunk,
+	FilePlaceholder,
+	NormalizedInputOptions,
+	OutputBundleWithPlaceholders,
+	PreRenderedAsset,
+	WarningHandler
+} from '../rollup/types';
 import { BuildPhase } from './buildPhase';
 import { createHash } from './crypto';
 import {
@@ -13,36 +21,43 @@ import {
 	errFileReferenceIdNotFoundForFilename,
 	errInvalidRollupPhaseForChunkEmission,
 	errNoAssetSourceSet,
-	error
+	error,
+	warnDeprecation
 } from './error';
 import { extname } from './path';
 import { isPlainPathFragment } from './relativeId';
 import { makeUnique, renderNamePattern } from './renderNamePattern';
 
 interface OutputSpecificFileData {
-	assetFileNames: string;
+	assetFileNames: string | ((assetInfo: PreRenderedAsset) => string);
 	bundle: OutputBundleWithPlaceholders;
 }
 
 function generateAssetFileName(
 	name: string | undefined,
-	source: string | Buffer,
+	source: string | Uint8Array,
 	output: OutputSpecificFileData
 ): string {
 	const emittedName = name || 'asset';
 	return makeUnique(
-		renderNamePattern(output.assetFileNames, 'output.assetFileNames', {
-			hash() {
-				const hash = createHash();
-				hash.update(emittedName);
-				hash.update(':');
-				hash.update(source);
-				return hash.digest('hex').substr(0, 8);
-			},
-			ext: () => extname(emittedName).substr(1),
-			extname: () => extname(emittedName),
-			name: () => emittedName.substr(0, emittedName.length - extname(emittedName).length)
-		}),
+		renderNamePattern(
+			typeof output.assetFileNames === 'function'
+				? output.assetFileNames({ name, source, type: 'asset' })
+				: output.assetFileNames,
+			'output.assetFileNames',
+			{
+				hash() {
+					const hash = createHash();
+					hash.update(emittedName);
+					hash.update(':');
+					hash.update(source);
+					return hash.digest('hex').substr(0, 8);
+				},
+				ext: () => extname(emittedName).substr(1),
+				extname: () => extname(emittedName),
+				name: () => emittedName.substr(0, emittedName.length - extname(emittedName).length)
+			}
+		),
 		output.bundle
 	);
 }
@@ -50,10 +65,10 @@ function generateAssetFileName(
 function reserveFileNameInBundle(
 	fileName: string,
 	bundle: OutputBundleWithPlaceholders,
-	graph: Graph
+	warn: WarningHandler
 ) {
 	if (fileName in bundle) {
-		graph.warn(errFileNameConflict(fileName));
+		warn(errFileNameConflict(fileName));
 	}
 	bundle[fileName] = FILE_PLACEHOLDER;
 }
@@ -68,7 +83,7 @@ interface ConsumedChunk {
 interface ConsumedAsset {
 	fileName: string | undefined;
 	name: string | undefined;
-	source: string | Buffer | undefined;
+	source: string | Uint8Array | undefined;
 	type: 'asset';
 }
 
@@ -109,14 +124,14 @@ function getValidSource(
 	source: unknown,
 	emittedFile: { fileName?: string; name?: string },
 	fileReferenceId: string | null
-): string | Buffer {
-	if (typeof source !== 'string' && !Buffer.isBuffer(source)) {
+): string | Uint8Array {
+	if (!(typeof source === 'string' || source instanceof Uint8Array)) {
 		const assetName = emittedFile.fileName || emittedFile.name || fileReferenceId;
 		return error(
 			errFailedValidation(
 				`Could not set source for ${
 					typeof assetName === 'string' ? `asset "${assetName}"` : 'unnamed asset'
-				}, asset source needs to be a string of Buffer.`
+				}, asset source needs to be a string, Uint8Array or Buffer.`
 			)
 		);
 	}
@@ -130,19 +145,25 @@ function getAssetFileName(file: ConsumedAsset, referenceId: string): string {
 	return file.fileName;
 }
 
-function getChunkFileName(file: ConsumedChunk): string {
-	const fileName = file.fileName || (file.module && file.module.facadeChunk!.id);
+function getChunkFileName(
+	file: ConsumedChunk,
+	facadeChunkByModule: Map<Module, Chunk> | null
+): string {
+	const fileName = file.fileName || (file.module && facadeChunkByModule?.get(file.module)?.id);
 	if (!fileName) return error(errChunkNotGeneratedForFileName(file.fileName || file.name));
 	return fileName;
 }
 
 export class FileEmitter {
+	private facadeChunkByModule: Map<Module, Chunk> | null = null;
 	private filesByReferenceId: Map<string, ConsumedFile>;
-	private graph: Graph;
 	private output: OutputSpecificFileData | null = null;
 
-	constructor(graph: Graph, baseFileEmitter?: FileEmitter) {
-		this.graph = graph;
+	constructor(
+		private readonly graph: Graph,
+		private readonly options: NormalizedInputOptions,
+		baseFileEmitter?: FileEmitter
+	) {
 		this.filesByReferenceId = baseFileEmitter
 			? new Map(baseFileEmitter.filesByReferenceId)
 			: new Map();
@@ -159,16 +180,18 @@ export class FileEmitter {
 		if (!hasValidType(emittedFile)) {
 			return error(
 				errFailedValidation(
-					`Emitted files must be of type "asset" or "chunk", received "${emittedFile &&
-						(emittedFile as any).type}".`
+					`Emitted files must be of type "asset" or "chunk", received "${
+						emittedFile && (emittedFile as any).type
+					}".`
 				)
 			);
 		}
 		if (!hasValidName(emittedFile)) {
 			return error(
 				errFailedValidation(
-					`The "fileName" or "name" properties of emitted files must be strings that are neither absolute nor relative paths and do not contain invalid characters, received "${emittedFile.fileName ||
-						emittedFile.name}".`
+					`The "fileName" or "name" properties of emitted files must be strings that are neither absolute nor relative paths and do not contain invalid characters, received "${
+						emittedFile.fileName || emittedFile.name
+					}".`
 				)
 			);
 		}
@@ -183,7 +206,7 @@ export class FileEmitter {
 		const emittedFile = this.filesByReferenceId.get(fileReferenceId);
 		if (!emittedFile) return error(errFileReferenceIdNotFoundForFilename(fileReferenceId));
 		if (emittedFile.type === 'chunk') {
-			return getChunkFileName(emittedFile);
+			return getChunkFileName(emittedFile, this.facadeChunkByModule);
 		} else {
 			return getAssetFileName(emittedFile, fileReferenceId);
 		}
@@ -212,15 +235,17 @@ export class FileEmitter {
 
 	public setOutputBundle = (
 		outputBundle: OutputBundleWithPlaceholders,
-		assetFileNames: string
+		assetFileNames: string | ((assetInfo: PreRenderedAsset) => string),
+		facadeChunkByModule: Map<Module, Chunk>
 	): void => {
 		this.output = {
 			assetFileNames,
 			bundle: outputBundle
 		};
+		this.facadeChunkByModule = facadeChunkByModule;
 		for (const emittedFile of this.filesByReferenceId.values()) {
 			if (emittedFile.fileName) {
-				reserveFileNameInBundle(emittedFile.fileName, this.output.bundle, this.graph);
+				reserveFileNameInBundle(emittedFile.fileName, this.output.bundle, this.options.onwarn);
 			}
 		}
 		for (const [referenceId, consumedFile] of this.filesByReferenceId.entries()) {
@@ -262,7 +287,7 @@ export class FileEmitter {
 		);
 		if (this.output) {
 			if (emittedAsset.fileName) {
-				reserveFileNameInBundle(emittedAsset.fileName, this.output.bundle, this.graph);
+				reserveFileNameInBundle(emittedAsset.fileName, this.output.bundle, this.options.onwarn);
 			}
 			if (source !== undefined) {
 				this.finalizeAsset(consumedAsset, source, referenceId, this.output);
@@ -289,19 +314,8 @@ export class FileEmitter {
 			type: 'chunk'
 		};
 		this.graph.moduleLoader
-			.addEntryModules(
-				[
-					{
-						fileName: emittedChunk.fileName || null,
-						id: emittedChunk.id,
-						name: emittedChunk.name || null
-					}
-				],
-				false
-			)
-			.then(({ newEntryModules: [module] }) => {
-				consumedChunk.module = module;
-			})
+			.emitChunk((emittedChunk as unknown) as EmittedChunk)
+			.then(module => (consumedChunk.module = module))
 			.catch(() => {
 				// Avoid unhandled Promise rejection as the error will be thrown later
 				// once module loading has finished
@@ -312,25 +326,27 @@ export class FileEmitter {
 
 	private finalizeAsset(
 		consumedFile: ConsumedFile,
-		source: string | Buffer,
+		source: string | Uint8Array,
 		referenceId: string,
 		output: OutputSpecificFileData
 	): void {
 		const fileName =
 			consumedFile.fileName ||
-			this.findExistingAssetFileNameWithSource(output.bundle, source) ||
+			findExistingAssetFileNameWithSource(output.bundle, source) ||
 			generateAssetFileName(consumedFile.name, source, output);
 
 		// We must not modify the original assets to avoid interaction between outputs
 		const assetWithFileName = { ...consumedFile, source, fileName };
 		this.filesByReferenceId.set(referenceId, assetWithFileName);
-		const graph = this.graph;
+		const options = this.options;
 		output.bundle[fileName] = {
 			fileName,
+			name: consumedFile.name,
 			get isAsset(): true {
-				graph.warnDeprecation(
+				warnDeprecation(
 					'Accessing "isAsset" on files in the bundle is deprecated, please use "type === \'asset\'" instead',
-					true
+					true,
+					options
 				);
 
 				return true;
@@ -339,21 +355,39 @@ export class FileEmitter {
 			type: 'asset'
 		};
 	}
+}
 
-	private findExistingAssetFileNameWithSource(
-		bundle: OutputBundleWithPlaceholders,
-		source: string | Buffer
-	): string | null {
-		for (const fileName of Object.keys(bundle)) {
-			const outputFile = bundle[fileName];
-			if (
-				outputFile.type === 'asset' &&
-				(Buffer.isBuffer(source) && Buffer.isBuffer(outputFile.source)
-					? source.equals(outputFile.source)
-					: source === outputFile.source)
-			)
-				return fileName;
-		}
-		return null;
+function findExistingAssetFileNameWithSource(
+	bundle: OutputBundleWithPlaceholders,
+	source: string | Uint8Array
+): string | null {
+	for (const fileName of Object.keys(bundle)) {
+		const outputFile = bundle[fileName];
+		if (outputFile.type === 'asset' && areSourcesEqual(source, outputFile.source)) return fileName;
 	}
+	return null;
+}
+
+function areSourcesEqual(
+	sourceA: string | Uint8Array | Buffer,
+	sourceB: string | Uint8Array | Buffer
+): boolean {
+	if (typeof sourceA === 'string') {
+		return sourceA === sourceB;
+	}
+	if (typeof sourceB === 'string') {
+		return false;
+	}
+	if ('equals' in sourceA) {
+		return sourceA.equals(sourceB);
+	}
+	if (sourceA.length !== sourceB.length) {
+		return false;
+	}
+	for (let index = 0; index < sourceA.length; index++) {
+		if (sourceA[index] !== sourceB[index]) {
+			return false;
+		}
+	}
+	return true;
 }

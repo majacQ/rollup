@@ -7,60 +7,6 @@ const rollup = require('../../dist/rollup.js');
 const TEMP_DIR = path.join(__dirname, 'tmp');
 
 describe('hooks', () => {
-	it('allows to read and modify options in the options hook', () =>
-		rollup
-			.rollup({
-				input: 'input',
-				treeshake: false,
-				plugins: [
-					loader({ newInput: `alert('hello')` }),
-					{
-						buildStart(options) {
-							assert.strictEqual(options.input, 'newInput');
-							assert.strictEqual(options.treeshake, false);
-						},
-						options(options) {
-							assert.strictEqual(options.input, 'input');
-							assert.strictEqual(options.treeshake, false);
-							assert.ok(/^\d+\.\d+\.\d+/.test(this.meta.rollupVersion));
-							return Object.assign({}, options, { input: 'newInput' });
-						}
-					}
-				]
-			})
-			.then(bundle => {}));
-
-	it('allows to read and modify output options in the outputOptions hook', () =>
-		rollup
-			.rollup({
-				input: 'input',
-				treeshake: false,
-				plugins: [
-					loader({ input: `alert('hello')` }),
-					{
-						renderChunk(code, chunk, options) {
-							assert.strictEqual(options.banner, 'new banner');
-							assert.strictEqual(options.format, 'cjs');
-						},
-						outputOptions(options) {
-							assert.strictEqual(options.banner, 'banner');
-							assert.strictEqual(options.format, 'cjs');
-							assert.ok(/^\d+\.\d+\.\d+/.test(this.meta.rollupVersion));
-							return Object.assign({}, options, { banner: 'new banner' });
-						}
-					}
-				]
-			})
-			.then(bundle =>
-				bundle.generate({
-					format: 'cjs',
-					banner: 'banner'
-				})
-			)
-			.then(({ output }) => {
-				assert.strictEqual(output[0].code, `new banner\n'use strict';\n\nalert('hello');\n`);
-			}));
-
 	it('allows to replace file with dir in the outputOptions hook', () =>
 		rollup
 			.rollup({
@@ -338,7 +284,7 @@ describe('hooks', () => {
 			.then(bundle =>
 				Promise.all([
 					bundle.generate({ format: 'es', assetFileNames: 'asset' }),
-					bundle.generate({ format: 'cjs', assetFileNames: 'asset' })
+					bundle.generate({ format: 'cjs', assetFileNames: 'asset', exports: 'auto' })
 				])
 			)
 			.then(([{ output: output1 }, { output: output2 }]) => {

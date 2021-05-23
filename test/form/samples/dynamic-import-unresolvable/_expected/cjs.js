@@ -1,10 +1,11 @@
 'use strict';
 
 function _interopNamespace(e) {
-	if (e && e.__esModule) { return e; } else {
-		var n = {};
-		if (e) {
-			Object.keys(e).forEach(function (k) {
+	if (e && e.__esModule) return e;
+	var n = Object.create(null);
+	if (e) {
+		Object.keys(e).forEach(function (k) {
+			if (k !== 'default') {
 				var d = Object.getOwnPropertyDescriptor(e, k);
 				Object.defineProperty(n, k, d.get ? d : {
 					enumerable: true,
@@ -12,13 +13,14 @@ function _interopNamespace(e) {
 						return e[k];
 					}
 				});
-			});
-		}
-		n['default'] = e;
-		return n;
+			}
+		});
 	}
+	n['default'] = e;
+	return Object.freeze(n);
 }
 
-new Promise(function (resolve) { resolve(_interopNamespace(require(`${globalThis.unknown}`))); });
-new Promise(function (resolve) { resolve(_interopNamespace(require(`My ${globalThis.unknown}`))); });
-new Promise(function (resolve) { resolve(_interopNamespace(require(7))); });
+Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require(`${globalThis.unknown}`)); });
+Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require(`My ${globalThis.unknown}`)); });
+Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require('./seven.js')); });
+Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespace(require('./seven.js')); });

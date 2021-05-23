@@ -1,12 +1,21 @@
 var bundle = (function (exports, external) {
 	'use strict';
 
-	external = external && Object.prototype.hasOwnProperty.call(external, 'default') ? external['default'] : external;
+	function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+	var external__default = /*#__PURE__*/_interopDefaultLegacy(external);
 
 	const value = 42;
 
-	exports.default = external;
+	Object.defineProperty(exports, 'default', {
+		enumerable: true,
+		get: function () {
+			return external__default['default'];
+		}
+	});
 	exports.value = value;
+
+	Object.defineProperty(exports, '__esModule', { value: true });
 
 	return exports;
 

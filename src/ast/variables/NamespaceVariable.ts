@@ -1,7 +1,7 @@
 import Module, { AstContext } from '../../Module';
 import { RenderOptions } from '../../utils/renderHelpers';
 import { RESERVED_NAMES } from '../../utils/reservedNames';
-import { InclusionContext } from '../ExecutionContext';
+import { getSystemExportStatement } from '../../utils/systemJsRendering';
 import Identifier from '../nodes/Identifier';
 import { UNKNOWN_PATH } from '../utils/PathTracker';
 import Variable from './Variable';
@@ -9,15 +9,15 @@ import Variable from './Variable';
 export default class NamespaceVariable extends Variable {
 	context: AstContext;
 	isNamespace!: true;
-	memberVariables: { [name: string]: Variable } = Object.create(null);
 	module: Module;
 
-	private containsExternalNamespace = false;
+	private memberVariables: { [name: string]: Variable } | null = null;
+	private mergedNamespaces: Variable[] = [];
 	private referencedEarly = false;
 	private references: Identifier[] = [];
-	private syntheticNamedExports: boolean;
+	private syntheticNamedExports: boolean | string;
 
-	constructor(context: AstContext, syntheticNamedExports: boolean) {
+	constructor(context: AstContext, syntheticNamedExports: boolean | string) {
 		super(context.getModuleName());
 		this.context = context;
 		this.module = context.module;
@@ -34,41 +34,38 @@ export default class NamespaceVariable extends Variable {
 	// the reassignment to the right variable. This means we lost track of this variable and thus
 	// need to reassign all exports.
 	deoptimizePath() {
-		for (const key in this.memberVariables) {
-			this.memberVariables[key].deoptimizePath(UNKNOWN_PATH);
+		const memberVariables = this.getMemberVariables();
+		for (const key of Object.keys(memberVariables)) {
+			memberVariables[key].deoptimizePath(UNKNOWN_PATH);
 		}
 	}
 
-	include(context: InclusionContext) {
-		if (!this.included) {
-			if (this.containsExternalNamespace) {
-				return this.context.error({
-					code: 'NAMESPACE_CANNOT_CONTAIN_EXTERNAL',
-					id: this.module.id,
-					message: `Cannot create an explicit namespace object for module "${this.context.getModuleName()}" because it contains a reexported external namespace`
-				});
-			}
-			this.included = true;
-			for (const identifier of this.references) {
-				if (identifier.context.getModuleExecIndex() <= this.context.getModuleExecIndex()) {
-					this.referencedEarly = true;
-					break;
-				}
-			}
-			if (this.context.preserveModules) {
-				for (const memberName of Object.keys(this.memberVariables))
-					this.memberVariables[memberName].include(context);
-			} else {
-				for (const memberName of Object.keys(this.memberVariables))
-					this.context.includeVariable(context, this.memberVariables[memberName]);
-			}
+	getMemberVariables(): { [name: string]: Variable } {
+		if (this.memberVariables) {
+			return this.memberVariables;
 		}
-	}
-
-	initialise() {
+		const memberVariables = Object.create(null);
 		for (const name of this.context.getExports().concat(this.context.getReexports())) {
-			if (name[0] === '*' && name.length > 1) this.containsExternalNamespace = true;
-			this.memberVariables[name] = this.context.traceExport(name);
+			if (name[0] !== '*' && name !== this.module.info.syntheticNamedExports) {
+				memberVariables[name] = this.context.traceExport(name);
+			}
+		}
+		return (this.memberVariables = memberVariables);
+	}
+
+	include() {
+		this.included = true;
+		this.context.includeAllExports();
+	}
+
+	prepareNamespace(mergedNamespaces: Variable[]) {
+		this.mergedNamespaces = mergedNamespaces;
+		const moduleExecIndex = this.context.getModuleExecIndex();
+		for (const identifier of this.references) {
+			if (identifier.context.getModuleExecIndex() <= moduleExecIndex) {
+				this.referencedEarly = true;
+				break;
+			}
 		}
 	}
 
@@ -77,8 +74,9 @@ export default class NamespaceVariable extends Variable {
 		const n = options.compact ? '' : '\n';
 		const t = options.indent;
 
-		const members = Object.keys(this.memberVariables).map(name => {
-			const original = this.memberVariables[name];
+		const memberVariables = this.getMemberVariables();
+		const members = Object.keys(memberVariables).map(name => {
+			const original = memberVariables[name];
 
 			if (this.referencedEarly || original.isReassigned) {
 				return `${t}get ${name}${_}()${_}{${_}return ${original.getName()}${
@@ -91,25 +89,36 @@ export default class NamespaceVariable extends Variable {
 			return `${t}${safeName}: ${original.getName()}`;
 		});
 
-		members.unshift(`${t}__proto__:${_}null`);
-
 		if (options.namespaceToStringTag) {
 			members.unshift(`${t}[Symbol.toStringTag]:${_}'Module'`);
 		}
 
-		const name = this.getName();
+		const needsObjectAssign = this.mergedNamespaces.length > 0 || this.syntheticNamedExports;
+		if (!needsObjectAssign) members.unshift(`${t}__proto__:${_}null`);
+
 		let output = `{${n}${members.join(`,${n}`)}${n}}`;
-		if (this.syntheticNamedExports) {
-			output = `/*#__PURE__*/Object.assign(${output}, ${this.module.getDefaultExport().getName()})`;
+		if (needsObjectAssign) {
+			const assignmentArgs: string[] = ['/*#__PURE__*/Object.create(null)'];
+			if (this.mergedNamespaces.length > 0) {
+				assignmentArgs.push(...this.mergedNamespaces.map(variable => variable.getName()));
+			}
+			if (this.syntheticNamedExports) {
+				assignmentArgs.push(this.module.getSyntheticNamespace().getName());
+			}
+			if (members.length > 0) {
+				assignmentArgs.push(output);
+			}
+			output = `/*#__PURE__*/Object.assign(${assignmentArgs.join(`,${_}`)})`;
 		}
 		if (options.freeze) {
 			output = `/*#__PURE__*/Object.freeze(${output})`;
 		}
 
+		const name = this.getName();
 		output = `${options.varOrConst} ${name}${_}=${_}${output};`;
 
-		if (options.format === 'system' && this.exportName) {
-			output += `${n}exports('${this.exportName}',${_}${name});`;
+		if (options.format === 'system' && options.exportNamesByVariable.has(this)) {
+			output += `${n}${getSystemExportStatement([this], options)};`;
 		}
 
 		return output;

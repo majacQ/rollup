@@ -9,6 +9,7 @@ import BlockStatement from './BlockStatement';
 import BreakStatement from './BreakStatement';
 import CallExpression from './CallExpression';
 import CatchClause from './CatchClause';
+import ChainExpression from './ChainExpression';
 import ClassBody from './ClassBody';
 import ClassDeclaration from './ClassDeclaration';
 import ClassExpression from './ClassExpression';
@@ -19,7 +20,9 @@ import EmptyStatement from './EmptyStatement';
 import ExportAllDeclaration from './ExportAllDeclaration';
 import ExportDefaultDeclaration from './ExportDefaultDeclaration';
 import ExportNamedDeclaration from './ExportNamedDeclaration';
+import ExportSpecifier from './ExportSpecifier';
 import ExpressionStatement from './ExpressionStatement';
+import FieldDefinition from './FieldDefinition';
 import ForInStatement from './ForInStatement';
 import ForOfStatement from './ForOfStatement';
 import ForStatement from './ForStatement';
@@ -28,7 +31,10 @@ import FunctionExpression from './FunctionExpression';
 import Identifier from './Identifier';
 import IfStatement from './IfStatement';
 import ImportDeclaration from './ImportDeclaration';
+import ImportDefaultSpecifier from './ImportDefaultSpecifier';
 import ImportExpression from './ImportExpression';
+import ImportNamespaceSpecifier from './ImportNamespaceSpecifier';
+import ImportSpecifier from './ImportSpecifier';
 import LabeledStatement from './LabeledStatement';
 import Literal from './Literal';
 import LogicalExpression from './LogicalExpression';
@@ -38,6 +44,7 @@ import MethodDefinition from './MethodDefinition';
 import NewExpression from './NewExpression';
 import ObjectExpression from './ObjectExpression';
 import ObjectPattern from './ObjectPattern';
+import PrivateName from './PrivateName';
 import Program from './Program';
 import Property from './Property';
 import RestElement from './RestElement';
@@ -45,6 +52,7 @@ import ReturnStatement from './ReturnStatement';
 import SequenceExpression from './SequenceExpression';
 import { NodeBase } from './shared/Node';
 import SpreadElement from './SpreadElement';
+import Super from './Super';
 import SwitchCase from './SwitchCase';
 import SwitchStatement from './SwitchStatement';
 import TaggedTemplateExpression from './TaggedTemplateExpression';
@@ -75,6 +83,7 @@ export const nodeConstructors: {
 	BreakStatement,
 	CallExpression,
 	CatchClause,
+	ChainExpression,
 	ClassBody,
 	ClassDeclaration,
 	ClassExpression,
@@ -85,7 +94,9 @@ export const nodeConstructors: {
 	ExportAllDeclaration,
 	ExportDefaultDeclaration,
 	ExportNamedDeclaration,
+	ExportSpecifier,
 	ExpressionStatement,
+	FieldDefinition,
 	ForInStatement,
 	ForOfStatement,
 	ForStatement,
@@ -94,7 +105,10 @@ export const nodeConstructors: {
 	Identifier,
 	IfStatement,
 	ImportDeclaration,
+	ImportDefaultSpecifier,
 	ImportExpression,
+	ImportNamespaceSpecifier,
+	ImportSpecifier,
 	LabeledStatement,
 	Literal,
 	LogicalExpression,
@@ -104,12 +118,14 @@ export const nodeConstructors: {
 	NewExpression,
 	ObjectExpression,
 	ObjectPattern,
+	PrivateName,
 	Program,
 	Property,
 	RestElement,
 	ReturnStatement,
 	SequenceExpression,
 	SpreadElement,
+	Super,
 	SwitchCase,
 	SwitchStatement,
 	TaggedTemplateExpression,

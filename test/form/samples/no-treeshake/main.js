@@ -18,6 +18,11 @@ function unusedButIncluded() {
 	} else {
 		(true && 'first') || 'second';
 	}
+	if (false) {
+		'first';
+	} else {
+		'second';
+	}
 	'sequence', 'expression';
 	switch ('test') {
 		case 'test':
@@ -42,3 +47,7 @@ test({
 		var unused = 1;
 	}
 });
+
+try {
+	const x = 1;
+} catch {}

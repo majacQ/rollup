@@ -1,5 +1,6 @@
-import color from 'colorette';
+import { bold, gray, yellow } from 'colorette';
 import { RollupWarning } from '../../src/rollup/types';
+import { getOrCreate } from '../../src/utils/getOrCreate';
 import relativeId from '../../src/utils/relativeId';
 import { stderr } from '../logging';
 
@@ -7,23 +8,29 @@ export interface BatchWarnings {
 	add: (warning: RollupWarning) => void;
 	readonly count: number;
 	flush: () => void;
+	readonly warningOccurred: boolean;
 }
 
 export default function batchWarnings() {
-	let deferredWarnings = new Map<keyof typeof deferredHandlers, RollupWarning[]>();
 	let count = 0;
+	let deferredWarnings = new Map<keyof typeof deferredHandlers, RollupWarning[]>();
+	let warningOccurred = false;
 
 	return {
 		get count() {
 			return count;
 		},
 
+		get warningOccurred() {
+			return warningOccurred;
+		},
+
 		add: (warning: RollupWarning) => {
 			count += 1;
+			warningOccurred = true;
 
 			if (warning.code! in deferredHandlers) {
-				if (!deferredWarnings.has(warning.code!)) deferredWarnings.set(warning.code!, []);
-				deferredWarnings.get(warning.code!)!.push(warning);
+				getOrCreate(deferredWarnings, warning.code!, () => []).push(warning);
 			} else if (warning.code! in immediateHandlers) {
 				immediateHandlers[warning.code!](warning);
 			} else {
@@ -37,7 +44,7 @@ export default function batchWarnings() {
 						? `${relativeId(id)}: (${warning.loc.line}:${warning.loc.column})`
 						: relativeId(id);
 
-					stderr(color.bold(relativeId(loc)));
+					stderr(bold(relativeId(loc)));
 				}
 
 				if (warning.frame) info(warning.frame);
@@ -80,7 +87,7 @@ const immediateHandlers: {
 						.map((name: string) => `'${name}'`)
 						.join(', ')} and '${warning.modules!.slice(-1)}'`;
 		stderr(
-			`Creating a browser bundle that depends on ${detail}. You might need to include https://www.npmjs.com/package/rollup-plugin-node-builtins`
+			`Creating a browser bundle that depends on ${detail}. You might need to include https://github.com/ionic-team/rollup-plugin-node-polyfills`
 		);
 	}
 };
@@ -119,9 +126,9 @@ const deferredHandlers: {
 		info('https://rollupjs.org/guide/en/#error-name-is-not-exported-by-module');
 
 		for (const warning of warnings) {
-			stderr(color.bold(warning.importer!));
+			stderr(bold(warning.importer!));
 			stderr(`${warning.missing} is not exported by ${warning.exporter}`);
-			stderr(color.gray(warning.frame!));
+			stderr(gray(warning.frame!));
 		}
 	},
 
@@ -131,16 +138,14 @@ const deferredHandlers: {
 			`Use output.globals to specify browser global variable names corresponding to external modules`
 		);
 		for (const warning of warnings) {
-			stderr(`${color.bold(warning.source!)} (guessing '${warning.guess}')`);
+			stderr(`${bold(warning.source!)} (guessing '${warning.guess}')`);
 		}
 	},
 
-	MIXED_EXPORTS: (warnings) => {
+	MIXED_EXPORTS: warnings => {
 		title('Mixing named and default exports');
-		info(`https://rollupjs.org/guide/en/#output-exports`);
-		stderr(
-			color.bold('The following entry modules are using named and default exports together:')
-		);
+		info(`https://rollupjs.org/guide/en/#outputexports`);
+		stderr(bold('The following entry modules are using named and default exports together:'));
 		const displayedWarnings = warnings.length > 5 ? warnings.slice(0, 3) : warnings;
 		for (const warning of displayedWarnings) {
 			stderr(relativeId(warning.id!));
@@ -157,7 +162,7 @@ const deferredHandlers: {
 		title(`Conflicting re-exports`);
 		for (const warning of warnings) {
 			stderr(
-				`${color.bold(relativeId(warning.reexporter!))} re-exports '${
+				`${bold(relativeId(warning.reexporter!))} re-exports '${
 					warning.name
 				}' from both ${relativeId(warning.sources![0])} and ${relativeId(
 					warning.sources![1]
@@ -184,12 +189,13 @@ const deferredHandlers: {
 				for (const warning of items) {
 					if (warning.url && warning.url !== lastUrl) info((lastUrl = warning.url));
 
-					if (warning.id) {
-						let loc = relativeId(warning.id);
+					const id = warning.id || warning.loc?.file;
+					if (id) {
+						let loc = relativeId(id);
 						if (warning.loc) {
 							loc += `: (${warning.loc.line}:${warning.loc.column})`;
 						}
-						stderr(color.bold(loc));
+						stderr(bold(loc));
 					}
 					if (warning.frame) info(warning.frame);
 				}
@@ -205,9 +211,9 @@ const deferredHandlers: {
 		const detail =
 			plugins.length > 1
 				? ` (such as ${plugins
-				.slice(0, -1)
-				.map(p => `'${p}'`)
-				.join(', ')} and '${plugins.slice(-1)}')`
+						.slice(0, -1)
+						.map(p => `'${p}'`)
+						.join(', ')} and '${plugins.slice(-1)}')`
 				: ` (such as '${plugins[0]}')`;
 
 		stderr(`Plugins that transform code${detail} should generate accompanying sourcemaps`);
@@ -225,13 +231,12 @@ const deferredHandlers: {
 
 		const dependencies = new Map();
 		for (const warning of warnings) {
-			if (!dependencies.has(warning.source)) dependencies.set(warning.source, []);
-			dependencies.get(warning.source).push(warning.importer);
+			getOrCreate(dependencies, warning.source, () => []).push(warning.importer);
 		}
 
 		for (const dependency of dependencies.keys()) {
 			const importers = dependencies.get(dependency);
-			stderr(`${color.bold(dependency)} (imported by ${importers.join(', ')})`);
+			stderr(`${bold(dependency)} (imported by ${importers.join(', ')})`);
 		}
 	},
 
@@ -244,11 +249,11 @@ const deferredHandlers: {
 };
 
 function title(str: string) {
-	stderr(color.bold(color.yellow(`(!) ${str}`)));
+	stderr(bold(yellow(`(!) ${str}`)));
 }
 
 function info(url: string) {
-	stderr(color.gray(url));
+	stderr(gray(url));
 }
 
 function nest<T>(array: T[], prop: string) {
@@ -257,16 +262,14 @@ function nest<T>(array: T[], prop: string) {
 
 	for (const item of array) {
 		const key = (item as any)[prop];
-		if (!lookup.has(key)) {
-			lookup.set(key, {
+		getOrCreate(lookup, key, () => {
+			const items = {
 				items: [],
 				key
-			});
-
-			nested.push(lookup.get(key)!);
-		}
-
-		lookup.get(key)!.items.push(item);
+			};
+			nested.push(items);
+			return items;
+		}).items.push(item);
 	}
 
 	return nested;
@@ -277,8 +280,8 @@ function showTruncatedWarnings(warnings: RollupWarning[]) {
 
 	const displayedByModule = nestedByModule.length > 5 ? nestedByModule.slice(0, 3) : nestedByModule;
 	for (const { key: id, items } of displayedByModule) {
-		stderr(color.bold(relativeId(id)));
-		stderr(color.gray(items[0].frame!));
+		stderr(bold(relativeId(id)));
+		stderr(gray(items[0].frame!));
 
 		if (items.length > 1) {
 			stderr(`...and ${items.length - 1} other ${items.length > 2 ? 'occurrences' : 'occurrence'}`);

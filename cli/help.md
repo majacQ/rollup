@@ -20,19 +20,21 @@ Basic options:
 -v, --version               Show version number
 -w, --watch                 Watch files in bundle and rebuild on changes
 --amd.id <id>               ID for AMD module (default is anonymous)
+--amd.autoId                Generate the AMD ID based off the chunk name
+--amd.basePath <prefix>     Path to prepend to auto generated AMD ID
 --amd.define <name>         Function to use in place of `define`
 --assetFileNames <pattern>  Name pattern for emitted assets
 --banner <text>             Code to insert at top of bundle (outside wrapper)
 --chunkFileNames <pattern>  Name pattern for emitted secondary chunks
 --compact                   Minify wrapper code
 --context <variable>        Specify top-level `this` value
---dynamicImportFunction <name>         Rename the dynamic `import()` function
 --entryFileNames <pattern>  Name pattern for emitted entry chunks
 --environment <values>      Settings passed to config file (see example)
 --no-esModule               Do not add __esModule property
 --exports <mode>            Specify export mode (auto, default, named, none)
 --extend                    Extend global variable defined by --name
 --no-externalLiveBindings   Do not generate code to support live bindings
+--failAfterWarnings         Exit with an error if the build produced warnings
 --footer <text>             Code to insert at end of bundle (outside wrapper)
 --no-freeze                 Do not freeze namespace objects
 --no-hoistTransitiveImports Do not hoist transitive imports into entry chunks
@@ -40,22 +42,36 @@ Basic options:
 --no-interop                Do not include interop block
 --inlineDynamicImports      Create single bundle when using dynamic imports
 --intro <text>              Code to insert at top of bundle (inside wrapper)
+--minifyInternalExports     Force or disable minification of internal exports
 --namespaceToStringTag      Create proper `.toString` methods for namespaces
 --noConflict                Generate a noConflict method for UMD globals
---no-strict                 Don't emit `"use strict";` in the generated modules
 --outro <text>              Code to insert at end of bundle (inside wrapper)
 --preferConst               Use `const` instead of `var` for exports
+--no-preserveEntrySignatures Avoid facade chunks for entry points
 --preserveModules           Preserve module structure
+--preserveModulesRoot       Put preserved modules under this path at root level
 --preserveSymlinks          Do not follow symlinks when resolving files
 --shimMissingExports        Create shim variables for missing exports
 --silent                    Don't print warnings
 --sourcemapExcludeSources   Do not include source code in source maps
 --sourcemapFile <file>      Specify bundle position for source maps
---no-stdin                  do not read "-" from stdin
+--stdin=ext                 Specify file extension used for stdin input
+--no-stdin                  Do not read "-" from stdin
+--no-strict                 Don't emit `"use strict";` in the generated modules
 --strictDeprecations        Throw errors for deprecated features
+--systemNullSetters         Replace empty SystemJS setters with `null`
 --no-treeshake              Disable tree-shaking optimisations
 --no-treeshake.annotations  Ignore pure call annotations
+--no-treeshake.moduleSideEffects Assume modules have no side-effects
 --no-treeshake.propertyReadSideEffects Ignore property access side-effects
+--no-treeshake.tryCatchDeoptimization Do not turn off try-catch-tree-shaking
+--no-treeshake.unknownGlobalSideEffects Assume unknown globals do not throw
+--waitForBundleInput        Wait for bundle input files
+--watch.buildDelay <number> Throttle watch rebuilds
+--no-watch.clearScreen      Do not clear the screen when rebuilding
+--watch.skipWrite           Do not write files to disk when watching
+--watch.exclude <files>     Exclude files from being watched
+--watch.include <files>     Limit watching to specified files
 
 Examples:
 

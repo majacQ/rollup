@@ -23,6 +23,7 @@ import * as NodeType from './NodeType';
 import { ExpressionEntity } from './shared/Expression';
 import { MultiExpression } from './shared/MultiExpression';
 import { ExpressionNode, IncludeChildren, NodeBase } from './shared/Node';
+import SpreadElement from './SpreadElement';
 
 export default class ConditionalExpression extends NodeBase implements DeoptimizableEntity {
 	alternate!: ExpressionNode;
@@ -155,6 +156,15 @@ export default class ConditionalExpression extends NodeBase implements Deoptimiz
 		}
 	}
 
+	includeCallArguments(context: InclusionContext, args: (ExpressionNode | SpreadElement)[]): void {
+		if (this.usedBranch === null) {
+			this.consequent.includeCallArguments(context, args);
+			this.alternate.includeCallArguments(context, args);
+		} else {
+			this.usedBranch.includeCallArguments(context, args);
+		}
+	}
+
 	render(
 		code: MagicString,
 		options: RenderOptions,
@@ -178,6 +188,7 @@ export default class ConditionalExpression extends NodeBase implements Deoptimiz
 				isCalleeOfRenderedParent: renderedParentType
 					? isCalleeOfRenderedParent
 					: (this.parent as CallExpression).callee === this,
+				preventASI: true,
 				renderedParentType: renderedParentType || this.parent.type
 			});
 		} else {

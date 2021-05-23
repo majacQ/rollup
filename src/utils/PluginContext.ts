@@ -1,16 +1,16 @@
 import { version as rollupVersion } from 'package.json';
-import ExternalModule from '../ExternalModule';
 import Graph from '../Graph';
-import Module from '../Module';
 import {
+	NormalizedInputOptions,
 	Plugin,
 	PluginCache,
 	PluginContext,
 	RollupWarning,
 	SerializablePluginCache
 } from '../rollup/types';
+import { BLANK } from './blank';
 import { BuildPhase } from './buildPhase';
-import { errInvalidRollupPhaseForAddWatchFile } from './error';
+import { errInvalidRollupPhaseForAddWatchFile, warnDeprecation } from './error';
 import { FileEmitter } from './FileEmitter';
 import { createPluginCache, getCacheForUncacheablePlugin, NO_CACHE } from './PluginCache';
 import {
@@ -25,18 +25,19 @@ function getDeprecatedContextHandler<H extends Function>(
 	newHandlerName: string,
 	pluginName: string,
 	activeDeprecation: boolean,
-	graph: Graph
+	options: NormalizedInputOptions
 ): H {
 	let deprecationWarningShown = false;
 	return (((...args: any[]) => {
 		if (!deprecationWarningShown) {
 			deprecationWarningShown = true;
-			graph.warnDeprecation(
+			warnDeprecation(
 				{
 					message: `The "this.${handlerName}" plugin context function used by plugin ${pluginName} is deprecated. The "this.${newHandlerName}" plugin context function should be used instead.`,
 					plugin: pluginName
 				},
-				activeDeprecation
+				activeDeprecation,
+				options
 			);
 		}
 		return handler(...args);
@@ -46,6 +47,7 @@ function getDeprecatedContextHandler<H extends Function>(
 export function getPluginContexts(
 	pluginCache: Record<string, SerializablePluginCache> | void,
 	graph: Graph,
+	options: NormalizedInputOptions,
 	fileEmitter: FileEmitter
 ): (plugin: Plugin, pluginIndex: number) => PluginContext {
 	const existingPluginNames = new Set<string>();
@@ -90,7 +92,7 @@ export function getPluginContexts(
 				'emitFile',
 				plugin.name,
 				true,
-				graph
+				options
 			),
 			emitChunk: getDeprecatedContextHandler(
 				(id: string, options?: { name?: string }) =>
@@ -99,7 +101,7 @@ export function getPluginContexts(
 				'emitFile',
 				plugin.name,
 				true,
-				graph
+				options
 			),
 			emitFile: fileEmitter.emitFile,
 			error(err): never {
@@ -111,7 +113,7 @@ export function getPluginContexts(
 				'getFileName',
 				plugin.name,
 				true,
-				graph
+				options
 			),
 			getChunkFileName: getDeprecatedContextHandler(
 				fileEmitter.getFileName,
@@ -119,59 +121,55 @@ export function getPluginContexts(
 				'getFileName',
 				plugin.name,
 				true,
-				graph
+				options
 			),
 			getFileName: fileEmitter.getFileName,
-			getModuleInfo(moduleId) {
-				const foundModule = graph.moduleById.get(moduleId);
-				if (foundModule == null) {
-					throw new Error(`Unable to find module ${moduleId}`);
-				}
-
-				return {
-					hasModuleSideEffects: foundModule.moduleSideEffects,
-					id: foundModule.id,
-					importedIds:
-						foundModule instanceof ExternalModule
-							? []
-							: Array.from(foundModule.sources).map(id => foundModule.resolvedIds[id].id),
-					isEntry: foundModule instanceof Module && foundModule.isEntryPoint,
-					isExternal: foundModule instanceof ExternalModule
-				};
-			},
+			getModuleIds: () => graph.modulesById.keys(),
+			getModuleInfo: graph.getModuleInfo,
+			getWatchFiles: () => Object.keys(graph.watchFiles),
 			isExternal: getDeprecatedContextHandler(
-				(id: string, parentId: string, isResolved = false) =>
-					graph.moduleLoader.isExternal(id, parentId, isResolved),
+				(id: string, parentId: string | undefined, isResolved = false) =>
+					options.external(id, parentId, isResolved),
 				'isExternal',
 				'resolve',
 				plugin.name,
 				true,
-				graph
+				options
 			),
 			meta: {
-				rollupVersion
+				rollupVersion,
+				watchMode: graph.watchMode
 			},
 			get moduleIds() {
-				return graph.moduleById.keys();
+				function* wrappedModuleIds() {
+					warnDeprecation(
+						{
+							message: `Accessing "this.moduleIds" on the plugin context by plugin ${plugin.name} is deprecated. The "this.getModuleIds" plugin context function should be used instead.`,
+							plugin: plugin.name
+						},
+						false,
+						options
+					);
+					yield* moduleIds;
+				}
+
+				const moduleIds = graph.modulesById.keys();
+				return wrappedModuleIds();
 			},
 			parse: graph.contextParse,
-			resolve(source, importer, options?: { skipSelf: boolean }) {
-				return graph.moduleLoader.resolveId(
-					source,
-					importer,
-					options && options.skipSelf ? pidx : null
-				);
+			resolve(source, importer, { custom, skipSelf } = BLANK) {
+				return graph.moduleLoader.resolveId(source, importer, custom, skipSelf ? pidx : null);
 			},
 			resolveId: getDeprecatedContextHandler(
-				(source: string, importer: string) =>
+				(source: string, importer: string | undefined) =>
 					graph.moduleLoader
-						.resolveId(source, importer)
+						.resolveId(source, importer, BLANK)
 						.then(resolveId => resolveId && resolveId.id),
 				'resolveId',
 				'resolve',
 				plugin.name,
 				true,
-				graph
+				options
 			),
 			setAssetSource: fileEmitter.setAssetSource,
 			warn(warning) {
@@ -179,7 +177,7 @@ export function getPluginContexts(
 				if (warning.code) warning.pluginCode = warning.code;
 				warning.code = 'PLUGIN_WARNING';
 				warning.plugin = plugin.name;
-				graph.warn(warning);
+				options.onwarn(warning);
 			}
 		};
 		return context;

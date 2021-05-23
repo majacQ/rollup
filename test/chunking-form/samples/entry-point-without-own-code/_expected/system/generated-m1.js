@@ -4,11 +4,8 @@ System.register(['./m2.js'], function (exports) {
 	return {
 		setters: [function (module) {
 			m2 = module.default;
-			exports('a', module.default);
 		}],
 		execute: function () {
-
-
 
 			var ms = /*#__PURE__*/Object.freeze({
 				__proto__: null,

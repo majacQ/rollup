@@ -1,6 +1,12 @@
 import { locate } from 'locate-character';
 import Module from '../Module';
-import { RollupError, RollupWarning } from '../rollup/types';
+import {
+	NormalizedInputOptions,
+	RollupError,
+	RollupLogProps,
+	RollupWarning,
+	WarningHandler
+} from '../rollup/types';
 import getCodeFrame from './getCodeFrame';
 import relativeId from './relativeId';
 
@@ -10,23 +16,23 @@ export function error(base: Error | RollupError): never {
 }
 
 export function augmentCodeLocation(
-	object: RollupError | RollupWarning,
+	props: RollupLogProps,
 	pos: number | { column: number; line: number },
 	source: string,
 	id: string
 ): void {
 	if (typeof pos === 'object') {
 		const { line, column } = pos;
-		object.loc = { file: id, line, column };
+		props.loc = { file: id, line, column };
 	} else {
-		object.pos = pos;
+		props.pos = pos;
 		const { line, column } = locate(source, pos, { offsetLine: 1 });
-		object.loc = { file: id, line, column };
+		props.loc = { file: id, line, column };
 	}
 
-	if (object.frame === undefined) {
-		const { line, column } = object.loc;
-		object.frame = getCodeFrame(source, line, column);
+	if (props.frame === undefined) {
+		const { line, column } = props.loc;
+		props.frame = getCodeFrame(source, line, column);
 	}
 }
 
@@ -48,14 +54,18 @@ export enum Errors {
 	INVALID_OPTION = 'INVALID_OPTION',
 	INVALID_PLUGIN_HOOK = 'INVALID_PLUGIN_HOOK',
 	INVALID_ROLLUP_PHASE = 'INVALID_ROLLUP_PHASE',
+	MISSING_IMPLICIT_DEPENDANT = 'MISSING_IMPLICIT_DEPENDANT',
 	MIXED_EXPORTS = 'MIXED_EXPORTS',
 	NAMESPACE_CONFLICT = 'NAMESPACE_CONFLICT',
+	NO_TRANSFORM_MAP_OR_AST_WITHOUT_CODE = 'NO_TRANSFORM_MAP_OR_AST_WITHOUT_CODE',
 	PLUGIN_ERROR = 'PLUGIN_ERROR',
+	PREFER_NAMED_EXPORTS = 'PREFER_NAMED_EXPORTS',
+	UNEXPECTED_NAMED_IMPORT = 'UNEXPECTED_NAMED_IMPORT',
 	UNRESOLVED_ENTRY = 'UNRESOLVED_ENTRY',
 	UNRESOLVED_IMPORT = 'UNRESOLVED_IMPORT',
 	VALIDATION_ERROR = 'VALIDATION_ERROR',
 	EXTERNAL_SYNTHETIC_EXPORTS = 'EXTERNAL_SYNTHETIC_EXPORTS',
-	SYNTHETIC_NAMED_EXPORTS_NEED_DEFAULT = 'SYNTHETIC_NAMED_EXPORTS_NEED_DEFAULT'
+	SYNTHETIC_NAMED_EXPORTS_NEED_NAMESPACE_EXPORT = 'SYNTHETIC_NAMED_EXPORTS_NEED_NAMESPACE_EXPORT'
 }
 
 export function errAssetNotFinalisedForFileName(name: string) {
@@ -154,7 +164,7 @@ export function errInvalidExportOptionValue(optionValue: string) {
 	return {
 		code: Errors.INVALID_EXPORT_OPTION,
 		message: `"output.exports" must be "default", "named", "none", "auto", or left unspecified (defaults to "auto"), received "${optionValue}"`,
-		url: `https://rollupjs.org/guide/en/#output-exports`
+		url: `https://rollupjs.org/guide/en/#outputexports`
 	};
 }
 
@@ -201,15 +211,60 @@ export function errInvalidRollupPhaseForChunkEmission() {
 	};
 }
 
+export function errImplicitDependantCannotBeExternal(
+	unresolvedId: string,
+	implicitlyLoadedBefore: string
+) {
+	return {
+		code: Errors.MISSING_IMPLICIT_DEPENDANT,
+		message: `Module "${relativeId(
+			unresolvedId
+		)}" that should be implicitly loaded before "${relativeId(
+			implicitlyLoadedBefore
+		)}" cannot be external.`
+	};
+}
+
+export function errUnresolvedImplicitDependant(
+	unresolvedId: string,
+	implicitlyLoadedBefore: string
+) {
+	return {
+		code: Errors.MISSING_IMPLICIT_DEPENDANT,
+		message: `Module "${relativeId(
+			unresolvedId
+		)}" that should be implicitly loaded before "${relativeId(
+			implicitlyLoadedBefore
+		)}" could not be resolved.`
+	};
+}
+
+export function errImplicitDependantIsNotIncluded(module: Module) {
+	const implicitDependencies = Array.from(module.implicitlyLoadedBefore, dependency =>
+		relativeId(dependency.id)
+	).sort();
+	return {
+		code: Errors.MISSING_IMPLICIT_DEPENDANT,
+		message: `Module "${relativeId(module.id)}" that should be implicitly loaded before "${
+			implicitDependencies.length === 1
+				? implicitDependencies[0]
+				: `${implicitDependencies.slice(0, -1).join('", "')}" and "${
+						implicitDependencies.slice(-1)[0]
+				  }`
+		}" is not included in the module graph. Either it was not imported by an included module or only via a tree-shaken dynamic import, or no imported bindings were used and it had otherwise no side-effects.`
+	};
+}
+
 export function errMixedExport(facadeModuleId: string, name?: string) {
 	return {
 		code: Errors.MIXED_EXPORTS,
 		id: facadeModuleId,
 		message: `Entry module "${relativeId(
 			facadeModuleId
-		)}" is using named and default exports together. Consumers of your bundle will have to use \`${name ||
-			'chunk'}["default"]\` to access the default export, which may not be what you want. Use \`output.exports: "named"\` to disable this warning`,
-		url: `https://rollupjs.org/guide/en/#output-exports`
+		)}" is using named and default exports together. Consumers of your bundle will have to use \`${
+			name || 'chunk'
+		}["default"]\` to access the default export, which may not be what you want. Use \`output.exports: "named"\` to disable this warning`,
+		url: `https://rollupjs.org/guide/en/#outputexports`
 	};
 }
 
@@ -228,6 +283,48 @@ export function errNamespaceConflict(
 		name,
 		reexporter: reexportingModule.id,
 		sources: [reexportingModule.exportsAll[name], additionalExportAllModule.exportsAll[name]]
+	};
+}
+
+export function errNoTransformMapOrAstWithoutCode(pluginName: string) {
+	return {
+		code: Errors.NO_TRANSFORM_MAP_OR_AST_WITHOUT_CODE,
+		message:
+			`The plugin "${pluginName}" returned a "map" or "ast" without returning ` +
+			'a "code". This will be ignored.'
+	};
+}
+
+export function errPreferNamedExports(facadeModuleId: string) {
+	const file = relativeId(facadeModuleId);
+	return {
+		code: Errors.PREFER_NAMED_EXPORTS,
+		id: facadeModuleId,
+		message: `Entry module "${file}" is implicitly using "default" export mode, which means for CommonJS output that its default export is assigned to "module.exports". For many tools, such CommonJS output will not be interchangeable with the original ES module. If this is intended, explicitly set "output.exports" to either "auto" or "default", otherwise you might want to consider changing the signature of "${file}" to use named exports only.`,
+		url: `https://rollupjs.org/guide/en/#outputexports`
+	};
+}
+
+export function errUnexpectedNamedImport(id: string, imported: string, isReexport: boolean) {
+	const importType = isReexport ? 'reexport' : 'import';
+	return {
+		code: Errors.UNEXPECTED_NAMED_IMPORT,
+		id,
+		message: `The named export "${imported}" was ${importType}ed from the external module ${relativeId(
+			id
+		)} even though its interop type is "defaultOnly". Either remove or change this ${importType} or change the value of the "output.interop" option.`,
+		url: 'https://rollupjs.org/guide/en/#outputinterop'
+	};
+}
+
+export function errUnexpectedNamespaceReexport(id: string) {
+	return {
+		code: Errors.UNEXPECTED_NAMED_IMPORT,
+		id,
+		message: `There was a namespace "*" reexport from the external module ${relativeId(
+			id
+		)} even though its interop type is "defaultOnly". This will be ignored as namespace reexports only reexport named exports. If this is not intended, either remove or change this reexport or change the value of the "output.interop" option.`,
+		url: 'https://rollupjs.org/guide/en/#outputinterop'
 	};
 }
 
@@ -278,4 +375,32 @@ export function errFailedValidation(message: string) {
 		code: Errors.VALIDATION_ERROR,
 		message
 	};
+}
+
+export function warnDeprecation(
+	deprecation: string | RollupWarning,
+	activeDeprecation: boolean,
+	options: NormalizedInputOptions
+): void {
+	warnDeprecationWithOptions(
+		deprecation,
+		activeDeprecation,
+		options.onwarn,
+		options.strictDeprecations
+	);
+}
+
+export function warnDeprecationWithOptions(
+	deprecation: string | RollupWarning,
+	activeDeprecation: boolean,
+	warn: WarningHandler,
+	strictDeprecations: boolean
+): void {
+	if (activeDeprecation || strictDeprecations) {
+		const warning = errDeprecation(deprecation);
+		if (strictDeprecations) {
+			return error(warning);
+		}
+		warn(warning);
+	}
 }

@@ -1,5 +1,6 @@
+import { Entity } from './Entity';
 import { ExpressionEntity } from './nodes/shared/Expression';
-import { PathTracker } from './utils/PathTracker';
+import { DiscriminatedPathTracker, PathTracker } from './utils/PathTracker';
 import ThisVariable from './variables/ThisVariable';
 
 interface ExecutionContextIgnore {
@@ -13,24 +14,29 @@ export const BROKEN_FLOW_NONE = 0;
 export const BROKEN_FLOW_BREAK_CONTINUE = 1;
 export const BROKEN_FLOW_ERROR_RETURN_LABEL = 2;
 
-export interface InclusionContext {
+interface ControlFlowContext {
 	brokenFlow: number;
 	includedLabels: Set<string>;
 }
 
-export interface HasEffectsContext extends InclusionContext {
+export interface InclusionContext extends ControlFlowContext {
+	includedCallArguments: Set<Entity>;
+}
+
+export interface HasEffectsContext extends ControlFlowContext {
 	accessed: PathTracker;
 	assigned: PathTracker;
 	brokenFlow: number;
-	called: PathTracker;
+	called: DiscriminatedPathTracker;
 	ignore: ExecutionContextIgnore;
-	instantiated: PathTracker;
+	instantiated: DiscriminatedPathTracker;
 	replacedVariableInits: Map<ThisVariable, ExpressionEntity>;
 }
 
 export function createInclusionContext(): InclusionContext {
 	return {
 		brokenFlow: BROKEN_FLOW_NONE,
+		includedCallArguments: new Set(),
 		includedLabels: new Set()
 	};
 }
@@ -40,7 +46,7 @@ export function createHasEffectsContext(): HasEffectsContext {
 		accessed: new PathTracker(),
 		assigned: new PathTracker(),
 		brokenFlow: BROKEN_FLOW_NONE,
-		called: new PathTracker(),
+		called: new DiscriminatedPathTracker(),
 		ignore: {
 			breaks: false,
 			continues: false,
@@ -48,7 +54,7 @@ export function createHasEffectsContext(): HasEffectsContext {
 			returnAwaitYield: false
 		},
 		includedLabels: new Set(),
-		instantiated: new PathTracker(),
+		instantiated: new DiscriminatedPathTracker(),
 		replacedVariableInits: new Map()
 	};
 }

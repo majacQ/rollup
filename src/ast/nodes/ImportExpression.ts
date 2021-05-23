@@ -1,7 +1,15 @@
 import MagicString from 'magic-string';
+import ExternalModule from '../../ExternalModule';
+import Module from '../../Module';
+import { GetInterop, NormalizedOutputOptions } from '../../rollup/types';
+import {
+	getDefaultOnlyHelper,
+	namespaceInteropHelpersByInteropType
+} from '../../utils/interopHelpers';
+import { PluginDriver } from '../../utils/PluginDriver';
 import { findFirstOccurrenceOutsideComment, RenderOptions } from '../../utils/renderHelpers';
-import { INTEROP_NAMESPACE_VARIABLE } from '../../utils/variableNames';
 import { InclusionContext } from '../ExecutionContext';
+import ChildScope from '../scopes/ChildScope';
 import NamespaceVariable from '../variables/NamespaceVariable';
 import * as NodeType from './NodeType';
 import { ExpressionNode, IncludeChildren, NodeBase } from './shared/Node';
@@ -11,12 +19,13 @@ interface DynamicImportMechanism {
 	right: string;
 }
 
-export default class Import extends NodeBase {
-	inlineNamespace?: NamespaceVariable;
+export default class ImportExpression extends NodeBase {
+	inlineNamespace: NamespaceVariable | null = null;
 	source!: ExpressionNode;
 	type!: NodeType.tImportExpression;
 
-	private exportMode: 'none' | 'named' | 'default' | 'auto' = 'auto';
+	private mechanism: DynamicImportMechanism | null = null;
+	private resolution: Module | ExternalModule | string | null = null;
 
 	hasEffects(): boolean {
 		return true;
@@ -47,100 +56,154 @@ export default class Import extends NodeBase {
 			return;
 		}
 
-		const importMechanism = this.getDynamicImportMechanism(options);
-		if (importMechanism) {
+		if (this.mechanism) {
 			code.overwrite(
 				this.start,
 				findFirstOccurrenceOutsideComment(code.original, '(', this.start + 6) + 1,
-				importMechanism.left
+				this.mechanism.left
 			);
-			code.overwrite(this.end - 1, this.end, importMechanism.right);
+			code.overwrite(this.end - 1, this.end, this.mechanism.right);
 		}
 		this.source.render(code, options);
 	}
 
-	renderFinalResolution(code: MagicString, resolution: string, format: string) {
-		if (this.included) {
-			if (format === 'amd' && resolution.startsWith("'.") && resolution.endsWith(".js'")) {
-				resolution = resolution.slice(0, -4) + "'";
-			}
-			code.overwrite(this.source.start, this.source.end, resolution);
+	renderFinalResolution(
+		code: MagicString,
+		resolution: string,
+		namespaceExportName: string | false | undefined,
+		options: NormalizedOutputOptions
+	) {
+		code.overwrite(this.source.start, this.source.end, resolution);
+		if (namespaceExportName) {
+			const _ = options.compact ? '' : ' ';
+			const s = options.compact ? '' : ';';
+			code.prependLeft(
+				this.end,
+				`.then(function${_}(n)${_}{${_}return n.${namespaceExportName}${s}${_}})`
+			);
 		}
 	}
 
-	setResolution(
-		exportMode: 'none' | 'named' | 'default' | 'auto',
-		inlineNamespace?: NamespaceVariable
+	setExternalResolution(
+		exportMode: 'none' | 'named' | 'default' | 'external',
+		resolution: Module | ExternalModule | string | null,
+		options: NormalizedOutputOptions,
+		pluginDriver: PluginDriver,
+		accessedGlobalsByScope: Map<ChildScope, Set<string>>
 	): void {
-		this.exportMode = exportMode;
-		if (inlineNamespace) {
-			this.inlineNamespace = inlineNamespace;
-		} else {
-			this.scope.addAccessedGlobalsByFormat({
-				amd: ['require'],
-				cjs: ['require'],
-				system: ['module']
-			});
-			if (exportMode === 'auto') {
-				this.scope.addAccessedGlobalsByFormat({
-					amd: [INTEROP_NAMESPACE_VARIABLE],
-					cjs: [INTEROP_NAMESPACE_VARIABLE]
-				});
-			}
+		this.resolution = resolution;
+		const accessedGlobals = [...(accessedImportGlobals[options.format] || [])];
+		let helper: string | null;
+		({ helper, mechanism: this.mechanism } = this.getDynamicImportMechanismAndHelper(
+			resolution,
+			exportMode,
+			options,
+			pluginDriver
+		));
+		if (helper) {
+			accessedGlobals.push(helper);
+		}
+		if (accessedGlobals.length > 0) {
+			this.scope.addAccessedGlobals(accessedGlobals, accessedGlobalsByScope);
 		}
 	}
 
-	private getDynamicImportMechanism(options: RenderOptions): DynamicImportMechanism | null {
+	setInternalResolution(inlineNamespace: NamespaceVariable) {
+		this.inlineNamespace = inlineNamespace;
+	}
+
+	private getDynamicImportMechanismAndHelper(
+		resolution: Module | ExternalModule | string | null,
+		exportMode: 'none' | 'named' | 'default' | 'external',
+		options: NormalizedOutputOptions,
+		pluginDriver: PluginDriver
+	): { helper: string | null; mechanism: DynamicImportMechanism | null } {
+		const mechanism = pluginDriver.hookFirstSync('renderDynamicImport', [
+			{
+				customResolution: typeof this.resolution === 'string' ? this.resolution : null,
+				format: options.format,
+				moduleId: this.context.module.id,
+				targetModuleId:
+					this.resolution && typeof this.resolution !== 'string' ? this.resolution.id : null
+			}
+		]);
+		if (mechanism) {
+			return { helper: null, mechanism };
+		}
 		switch (options.format) {
 			case 'cjs': {
 				const _ = options.compact ? '' : ' ';
-				const resolve = options.compact ? 'c' : 'resolve';
-				switch (this.exportMode) {
-					case 'default':
-						return {
-							left: `new Promise(function${_}(${resolve})${_}{${_}${resolve}({${_}'default':${_}require(`,
-							right: `)${_}});${_}})`
-						};
-					case 'auto':
-						return {
-							left: `new Promise(function${_}(${resolve})${_}{${_}${resolve}(${INTEROP_NAMESPACE_VARIABLE}(require(`,
-							right: `)));${_}})`
-						};
-					default:
-						return {
-							left: `new Promise(function${_}(${resolve})${_}{${_}${resolve}(require(`,
-							right: `));${_}})`
-						};
-				}
+				const s = options.compact ? '' : ';';
+				const leftStart = `Promise.resolve().then(function${_}()${_}{${_}return`;
+				const helper = this.getInteropHelper(resolution, exportMode, options.interop);
+				return {
+					helper,
+					mechanism: helper
+						? {
+								left: `${leftStart} /*#__PURE__*/${helper}(require(`,
+								right: `))${s}${_}})`
+						  }
+						: {
+								left: `${leftStart} require(`,
+								right: `)${s}${_}})`
+						  }
+				};
 			}
 			case 'amd': {
 				const _ = options.compact ? '' : ' ';
 				const resolve = options.compact ? 'c' : 'resolve';
 				const reject = options.compact ? 'e' : 'reject';
-				const resolveNamespace =
-					this.exportMode === 'default'
-						? `function${_}(m)${_}{${_}${resolve}({${_}'default':${_}m${_}});${_}}`
-						: this.exportMode === 'auto'
-						? `function${_}(m)${_}{${_}${resolve}(${INTEROP_NAMESPACE_VARIABLE}(m));${_}}`
-						: resolve;
+				const helper = this.getInteropHelper(resolution, exportMode, options.interop);
+				const resolveNamespace = helper
+					? `function${_}(m)${_}{${_}${resolve}(/*#__PURE__*/${helper}(m));${_}}`
+					: resolve;
 				return {
-					left: `new Promise(function${_}(${resolve},${_}${reject})${_}{${_}require([`,
-					right: `],${_}${resolveNamespace},${_}${reject})${_}})`
+					helper,
+					mechanism: {
+						left: `new Promise(function${_}(${resolve},${_}${reject})${_}{${_}require([`,
+						right: `],${_}${resolveNamespace},${_}${reject})${_}})`
+					}
 				};
 			}
 			case 'system':
 				return {
-					left: 'module.import(',
-					right: ')'
+					helper: null,
+					mechanism: {
+						left: 'module.import(',
+						right: ')'
+					}
 				};
 			case 'es':
 				if (options.dynamicImportFunction) {
 					return {
-						left: `${options.dynamicImportFunction}(`,
-						right: ')'
+						helper: null,
+						mechanism: {
+							left: `${options.dynamicImportFunction}(`,
+							right: ')'
+						}
 					};
 				}
 		}
-		return null;
+		return { helper: null, mechanism: null };
+	}
+
+	private getInteropHelper(
+		resolution: Module | ExternalModule | string | null,
+		exportMode: 'none' | 'named' | 'default' | 'external',
+		interop: GetInterop
+	): string | null {
+		return exportMode === 'external'
+			? namespaceInteropHelpersByInteropType[
+					String(interop(resolution instanceof ExternalModule ? resolution.id : null))
+			  ]
+			: exportMode === 'default'
+			? getDefaultOnlyHelper()
+			: null;
 	}
 }
+
+const accessedImportGlobals: Record<string, string[]> = {
+	amd: ['require'],
+	cjs: ['require'],
+	system: ['module']
+};

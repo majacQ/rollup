@@ -1,11 +1,10 @@
 import { DecodedSourceMap, SourceMap } from 'magic-string';
-import Chunk from '../Chunk';
-import Graph from '../Graph';
 import Module from '../Module';
 import {
 	DecodedSourceMapOrMissing,
 	ExistingDecodedSourceMap,
-	SourceMapSegment
+	SourceMapSegment,
+	WarningHandler
 } from '../rollup/types';
 import { error } from './error';
 import { basename, dirname, relative, resolve } from './path';
@@ -146,13 +145,13 @@ class Link {
 	}
 }
 
-function getLinkMap(graph: Graph) {
+function getLinkMap(warn: WarningHandler) {
 	return function linkMap(source: Source | Link, map: DecodedSourceMapOrMissing) {
 		if (map.mappings) {
 			return new Link(map, [source]);
 		}
 
-		graph.warn({
+		warn({
 			code: 'SOURCEMAP_BROKEN',
 			message:
 				`Sourcemap is likely to be incorrect: a plugin (${map.plugin}) was used to transform ` +
@@ -186,8 +185,6 @@ function getCollapsedSourcemap(
 	} else {
 		const sources = originalSourcemap.sources;
 		const sourcesContent = originalSourcemap.sourcesContent || [];
-
-		// TODO indiscriminately treating IDs and sources as normal paths is probably bad.
 		const directory = dirname(id) || '.';
 		const sourceRoot = originalSourcemap.sourceRoot || '.';
 
@@ -200,14 +197,14 @@ function getCollapsedSourcemap(
 }
 
 export function collapseSourcemaps(
-	bundle: Chunk,
 	file: string,
 	map: DecodedSourceMap,
 	modules: Module[],
 	bundleSourcemapChain: DecodedSourceMapOrMissing[],
-	excludeContent: boolean | undefined
+	excludeContent: boolean | undefined,
+	warn: WarningHandler
 ) {
-	const linkMap = getLinkMap(bundle.graph);
+	const linkMap = getLinkMap(warn);
 	const moduleSources = modules
 		.filter(module => !module.excludeFromSourcemap)
 		.map(module =>
@@ -240,11 +237,11 @@ export function collapseSourcemaps(
 }
 
 export function collapseSourcemap(
-	graph: Graph,
 	id: string,
 	originalCode: string,
 	originalSourcemap: ExistingDecodedSourceMap | null,
-	sourcemapChain: DecodedSourceMapOrMissing[]
+	sourcemapChain: DecodedSourceMapOrMissing[],
+	warn: WarningHandler
 ): ExistingDecodedSourceMap | null {
 	if (!sourcemapChain.length) {
 		return originalSourcemap;
@@ -255,7 +252,7 @@ export function collapseSourcemap(
 		originalCode,
 		originalSourcemap,
 		sourcemapChain,
-		getLinkMap(graph)
+		getLinkMap(warn)
 	) as Link;
 	const map = source.traceMappings();
 	return { version: 3, ...map };

@@ -7,12 +7,12 @@ exports.compareError = compareError;
 exports.compareWarnings = compareWarnings;
 exports.deindent = deindent;
 exports.executeBundle = executeBundle;
-exports.extend = extend;
+exports.getObject = getObject;
 exports.loader = loader;
 exports.normaliseOutput = normaliseOutput;
 exports.runTestSuiteWithSamples = runTestSuiteWithSamples;
 exports.assertDirectoriesAreEqual = assertDirectoriesAreEqual;
-exports.assertStderrIncludes = assertStderrIncludes;
+exports.assertIncludes = assertIncludes;
 
 function normaliseError(error) {
 	delete error.stack;
@@ -61,37 +61,28 @@ function compareWarnings(actual, expected) {
 }
 
 function deindent(str) {
-	return str
-		.slice(1)
-		.replace(/^\t+/gm, '')
-		.replace(/\s+$/gm, '')
-		.trim();
+	return str.slice(1).replace(/^\t+/gm, '').replace(/\s+$/gm, '').trim();
 }
 
-function executeBundle(bundle, require) {
-	return bundle
-		.generate({
-			format: 'cjs'
-		})
-		.then(({ output: [cjs] }) => {
-			const m = new Function('module', 'exports', 'require', cjs.code);
-
-			const module = { exports: {} };
-			m(module, module.exports, require);
-
-			return module.exports;
-		});
-}
-
-function extend(target) {
-	[].slice.call(arguments, 1).forEach(source => {
-		source &&
-			Object.keys(source).forEach(key => {
-				target[key] = source[key];
-			});
+async function executeBundle(bundle, require) {
+	const {
+		output: [cjs]
+	} = await bundle.generate({
+		exports: 'auto',
+		format: 'cjs'
 	});
+	const wrapper = new Function('module', 'exports', 'require', cjs.code);
+	const module = { exports: {} };
+	wrapper(module, module.exports, require);
+	return module.exports;
+}
 
-	return target;
+function getObject(entries) {
+	const object = {};
+	for (const [key, value] of entries) {
+		object[key] = value;
+	}
+	return object;
 }
 
 function loadConfig(configFile) {
@@ -102,7 +93,7 @@ function loadConfig(configFile) {
 			const dir = path.dirname(configFile);
 			removeOldTest(dir);
 		} else {
-			throw new Error(`Failed to load ${path}: ${err.message}`);
+			throw new Error(`Failed to load ${configFile}: ${err.message}`);
 		}
 	}
 }
@@ -139,10 +130,7 @@ function loader(modules) {
 }
 
 function normaliseOutput(code) {
-	return code
-		.toString()
-		.trim()
-		.replace(/\r\n/g, '\n');
+	return code.toString().trim().replace(/\r\n/g, '\n');
 }
 
 function runTestSuiteWithSamples(suiteName, samplesDir, runTest, onTeardown) {
@@ -150,11 +138,11 @@ function runTestSuiteWithSamples(suiteName, samplesDir, runTest, onTeardown) {
 }
 
 // You can run only or skip certain kinds of tests be appending .only or .skip
-runTestSuiteWithSamples.only = function(suiteName, samplesDir, runTest, onTeardown) {
+runTestSuiteWithSamples.only = function (suiteName, samplesDir, runTest, onTeardown) {
 	describe.only(suiteName, () => runSamples(samplesDir, runTest, onTeardown));
 };
 
-runTestSuiteWithSamples.skip = function(suiteName) {
+runTestSuiteWithSamples.skip = function (suiteName) {
 	describe.skip(suiteName, () => {});
 };
 
@@ -190,7 +178,13 @@ function runTestsInDir(dir, runTest) {
 
 function loadConfigAndRunTest(dir, runTest) {
 	const config = loadConfig(dir + '/_config.js');
-	if (config && (!config.skipIfWindows || process.platform !== 'win32')) runTest(dir, config);
+	if (
+		config &&
+		(!config.skipIfWindows || process.platform !== 'win32') &&
+		(!config.onlyWindows || process.platform === 'win32') &&
+		(!config.minNodeVersion || config.minNodeVersion <= Number(/^v(\d+)/.exec(process.version)[1]))
+	)
+		runTest(dir, config);
 }
 
 function assertDirectoriesAreEqual(actualDir, expectedDir) {
@@ -220,14 +214,14 @@ function assertFilesAreEqual(actualFiles, expectedFiles, dirs = []) {
 	});
 }
 
-function assertStderrIncludes(stderr, expected) {
+function assertIncludes(actual, expected) {
 	try {
 		assert.ok(
-			stderr.includes(expected),
-			`Could not find ${JSON.stringify(expected)} in ${JSON.stringify(stderr)}`
+			actual.includes(expected),
+			`${JSON.stringify(actual)}\nincludes\n${JSON.stringify(expected)}`
 		);
 	} catch (err) {
-		err.actual = stderr;
+		err.actual = actual;
 		err.expected = expected;
 		throw err;
 	}

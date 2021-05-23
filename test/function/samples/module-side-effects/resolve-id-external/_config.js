@@ -29,6 +29,7 @@ module.exports = {
 	options: {
 		treeshake: {
 			moduleSideEffects(id) {
+				if (id.includes('main')) return true;
 				return JSON.parse(id.split('-')[3]);
 			}
 		},
@@ -45,7 +46,7 @@ module.exports = {
 			},
 			buildEnd() {
 				assert.deepStrictEqual(
-					Array.from(this.moduleIds)
+					Array.from(this.getModuleIds())
 						.filter(id => !path.isAbsolute(id))
 						.sort()
 						.map(id => ({ id, hasModuleSideEffects: this.getModuleInfo(id).hasModuleSideEffects })),

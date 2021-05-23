@@ -1,9 +1,9 @@
 import { Bundle as MagicStringBundle } from 'magic-string';
-import { OutputOptions } from '../rollup/types';
+import { NormalizedOutputOptions } from '../rollup/types';
 import { error } from '../utils/error';
 import { isLegal } from '../utils/identifierHelpers';
 import { FinaliserOptions } from './index';
-import getExportBlock from './shared/getExportBlock';
+import { getExportBlock, getNamespaceMarkers } from './shared/getExportBlock';
 import getInteropBlock from './shared/getInteropBlock';
 import { keypath } from './shared/sanitize';
 import setupNamespace from './shared/setupNamespace';
@@ -15,6 +15,7 @@ const thisProp = (name: string) => `this${keypath(name)}`;
 export default function iife(
 	magicString: MagicStringBundle,
 	{
+		accessedGlobals,
 		dependencies,
 		exports,
 		hasExports,
@@ -25,12 +26,23 @@ export default function iife(
 		varOrConst,
 		warn
 	}: FinaliserOptions,
-	options: OutputOptions
+	{
+		compact,
+		esModule,
+		extend,
+		freeze,
+		externalLiveBindings,
+		globals,
+		interop,
+		name,
+		namespaceToStringTag,
+		strict
+	}: NormalizedOutputOptions
 ) {
-	const _ = options.compact ? '' : ' ';
-	const n = options.compact ? '' : '\n';
+	const _ = compact ? '' : ' ';
+	const s = compact ? '' : ';';
+	const n = compact ? '' : '\n';
 
-	const { extend, name } = options;
 	const isNamespaced = name && name.indexOf('.') !== -1;
 	const useVariableAssignment = !extend && !isNamespaced;
 
@@ -64,45 +76,58 @@ export default function iife(
 		}
 	}
 
-	const useStrict = options.strict !== false ? `${t}'use strict';${n}${n}` : ``;
+	const useStrict = strict ? `${t}'use strict';${n}` : '';
+	const interopBlock = getInteropBlock(
+		dependencies,
+		varOrConst,
+		interop,
+		externalLiveBindings,
+		freeze,
+		namespaceToStringTag,
+		accessedGlobals,
+		_,
+		n,
+		s,
+		t
+	);
+	magicString.prepend(`${intro}${interopBlock}`);
 
-	let wrapperIntro = `(function${_}(${args.join(`,${_}`)})${_}{${n}${useStrict}`;
-
-	if (hasExports && (!extend || !namedExportsMode) && name) {
-		wrapperIntro =
-			(useVariableAssignment ? `${varOrConst} ${name}` : thisProp(name)) +
-			`${_}=${_}${wrapperIntro}`;
-	}
-
-	if (isNamespaced && hasExports) {
-		wrapperIntro = setupNamespace(name!, 'this', options.globals, options.compact) + wrapperIntro;
+	let wrapperIntro = `(function${_}(${args.join(`,${_}`)})${_}{${n}${useStrict}${n}`;
+	if (hasExports) {
+		if (name && !(extend && namedExportsMode)) {
+			wrapperIntro =
+				(useVariableAssignment ? `${varOrConst} ${name}` : thisProp(name)) +
+				`${_}=${_}${wrapperIntro}`;
+		}
+		if (isNamespaced) {
+			wrapperIntro = setupNamespace(name!, 'this', globals, compact) + wrapperIntro;
+		}
 	}
 
 	let wrapperOutro = `${n}${n}}(${deps.join(`,${_}`)}));`;
-
-	if (!extend && namedExportsMode && hasExports) {
+	if (hasExports && !extend && namedExportsMode) {
 		wrapperOutro = `${n}${n}${t}return exports;${wrapperOutro}`;
 	}
-
-	// var foo__default = 'default' in foo ? foo['default'] : foo;
-	const interopBlock = getInteropBlock(dependencies, options, varOrConst);
-	if (interopBlock) magicString.prepend(interopBlock + n + n);
-
-	if (intro) magicString.prepend(intro);
 
 	const exportBlock = getExportBlock(
 		exports,
 		dependencies,
 		namedExportsMode,
-		options.interop,
-		options.compact,
-		t
+		interop,
+		compact,
+		t,
+		externalLiveBindings
 	);
-	if (exportBlock) magicString.append(n + n + exportBlock);
-	if (outro) magicString.append(outro);
-
-	return magicString
-		.indent(t)
-		.prepend(wrapperIntro)
-		.append(wrapperOutro);
+	let namespaceMarkers = getNamespaceMarkers(
+		namedExportsMode && hasExports,
+		esModule,
+		namespaceToStringTag,
+		_,
+		n
+	);
+	if (namespaceMarkers) {
+		namespaceMarkers = n + n + namespaceMarkers;
+	}
+	magicString.append(`${exportBlock}${namespaceMarkers}${outro}`);
+	return magicString.indent(t).prepend(wrapperIntro).append(wrapperOutro);
 }

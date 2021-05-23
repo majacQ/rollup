@@ -1,5 +1,9 @@
 'use strict';
 
-var main = Promise.all([new Promise(function (resolve) { resolve({ 'default': require('./entry.js') }); }), new Promise(function (resolve) { resolve(require('./generated-other.js')); })]);
+function _interopNamespaceDefaultOnly(e) {
+	return Object.freeze({__proto__: null, 'default': e});
+}
+
+var main = Promise.all([Promise.resolve().then(function () { return /*#__PURE__*/_interopNamespaceDefaultOnly(require('./entry.js')); }), Promise.resolve().then(function () { return require('./generated-other.js'); })]);
 
 module.exports = main;
